@@ -1,9 +1,8 @@
-# agent-platform — Week 1: Local LLM Gateway
+# agent-platform — Week 1 + 2: Local LLM Gateway & MCP Tool Layer
 
-A **local, free, production-inspired LLM gateway** that routes requests between
-two Ollama models based on query complexity, with automatic fallback. Built as
-Week 1 of a portfolio project demonstrating AI infrastructure and architecture
-skills.
+A **local, free, production-inspired AI agent platform** built across two weeks,
+demonstrating core AI infrastructure skills: LLM routing, RAG pipelines, and
+tool-calling via the Model Context Protocol (MCP).
 
 ---
 
@@ -11,29 +10,44 @@ skills.
 
 ```
 User / Test Script
-       │  POST /chat/completions {"prompt": "..."}
+       │  question or command
        ▼
-┌─────────────────────────────────┐
-│          router.py              │  FastAPI – port 8000
-│  1. Classify prompt complexity  │
-│  2. Route to small or large     │
-│  3. Fallback on timeout/error   │
-└────────────┬────────────────────┘
-             │  OpenAI-compatible REST
-             ▼
-┌─────────────────────────────────┐
-│        LiteLLM Proxy            │  Docker – port 4000
-│  Unified API for both models    │
-│  Aliases: small-model,          │
-│           large-model           │
-└────────────┬────────────────────┘
-             │  Ollama API
-             ▼
-┌─────────────────────────────────┐
-│           Ollama                │  Docker – port 11434
-│  llama3.2:3b  (small-model)     │
-│  llama3.1:8b  (large-model)     │
-└─────────────────────────────────┘
+┌────────────────────────────────────┐
+│          mcp_client.py             │  Orchestrator
+│  1. Ask LLM: which tool to use?   │
+│  2. Call tool via MCP (if needed) │
+│  3. Augment prompt with result    │
+│  4. Generate final answer         │
+└───┬──────────────┬─────────────────┘
+    │ stdio/MCP    │ POST /chat/completions
+    │              ▼
+    │  ┌─────────────────────────────────┐
+    │  │         router.py               │  FastAPI – port 8000
+    │  │  1. Classify prompt complexity  │
+    │  │  2. Route to small or large     │
+    │  │  3. Fallback on timeout/error   │
+    │  └────────────┬────────────────────┘
+    │               │  OpenAI-compatible REST
+    │               ▼
+    │  ┌─────────────────────────────────┐
+    │  │        LiteLLM Proxy            │  Docker – port 4000
+    │  │  Aliases: small-model,          │
+    │  │           large-model           │
+    │  └────────────┬────────────────────┘
+    │               │  http://host.docker.internal:11434
+    │               ▼
+    │  ┌─────────────────────────────────┐
+    │  │    Ollama (Windows host)        │  port 11434
+    │  │  llama3.2:3b  (small-model)    │
+    │  │  llama3.1:8b  (large-model)    │
+    │  └─────────────────────────────────┘
+    │
+    │  MCP stdio (subprocess)
+    ├──► retrieval_server.py   ──► ChromaDB (./chroma_db/)
+    │                               all-MiniLM-L6-v2 embeddings
+    │                               FastAPI docs (~20 files)
+    │
+    └──► calculator_server.py  ──► safe AST arithmetic evaluator
 ```
 
 ---
@@ -42,11 +56,29 @@ User / Test Script
 
 ```
 agent-platform/
-├── docker-compose.yml     # Ollama + LiteLLM containers
-├── litellm_config.yaml    # Model aliases and proxy settings
-├── router.py              # FastAPI routing gateway (main logic)
-├── test_router.py         # Integration tests (3 scenarios)
-├── requirements.txt       # Python dependencies
+├── docker-compose.yml           # LiteLLM proxy container
+├── litellm_config.yaml          # Model aliases + host.docker.internal routing
+│
+├── router.py                    # Week 1 – FastAPI routing gateway
+├── test_router.py               # Week 1 – integration tests (3 scenarios)
+│
+├── mcp_client.py                # Week 2 – MCP orchestration client
+├── test_mcp_flow.py             # Week 2 – MCP tool layer tests
+│
+├── mcp_servers/
+│   ├── retrieval_server.py      # MCP server: search_documents tool
+│   └── calculator_server.py     # MCP server: calculate tool
+│
+├── scripts/
+│   ├── fetch_docs.sh            # Shallow-clone FastAPI repo, extract .md files
+│   └── ingest.py                # Chunk + embed docs → persist to ChromaDB
+│
+├── data/
+│   └── raw_docs/                # FastAPI markdown docs (committed, ~25 files)
+│
+├── chroma_db/                   # Local vector DB (generated — add to .gitignore)
+│
+├── requirements.txt             # All Python dependencies
 └── README.md
 ```
 
@@ -55,169 +87,132 @@ agent-platform/
 ## Quick Start
 
 ### Prerequisites
-- [Ollama](https://ollama.ai) installed and running locally with models pulled:
+
+- [Ollama](https://ollama.ai) installed natively on Windows with models pulled:
   ```bash
   ollama pull llama3.2:3b
   ollama pull llama3.1:8b
   ```
-- Python 3.10+
-- *(Optional)* [Docker Desktop](https://www.docker.com/products/docker-desktop/) if running via containers
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
+- Python 3.10+, WSL (for the data fetch script)
 
 ---
 
-### Option A: Running Natively (Recommended for Local Dev & No-Docker Environments)
+### Week 1 Setup — LLM Gateway
 
 1. **Install Python dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Start LiteLLM Proxy (Terminal 1):**
-   ```bash
-   litellm --config litellm_config.yaml --port 4000
-   ```
-
-3. **Start the Router Gateway (Terminal 2):**
-   ```bash
-   python router.py
-   # or: uvicorn router:app --host 0.0.0.0 --port 8000 --reload
-   ```
-
-4. **Run the Test Suite (Terminal 3):**
-   ```bash
-   python test_router.py
-   ```
-
----
-
-### Option B: Running with Docker Compose
-
-1. **Start the containers:**
+2. **Start the LiteLLM proxy (Docker):**
    ```bash
    docker compose up -d
    ```
-2. **Start the router & run tests:**
+   > LiteLLM starts on port 4000 and connects to Ollama on the Windows host via
+   > `http://host.docker.internal:11434`.
+
+3. **Start the gateway router (Terminal 2):**
    ```bash
    python router.py
+   # Gateway listens on http://localhost:8000
+   ```
+
+4. **Run Week 1 tests:**
+   ```bash
    python test_router.py
    ```
 
-### 4 – Test it
+---
 
+### Week 2 Setup — MCP Tool Layer + RAG
+
+5. **Fetch FastAPI docs** (WSL required on Windows; runs a shallow git clone):
+   ```bash
+   wsl bash scripts/fetch_docs.sh
+   ```
+   This populates `data/raw_docs/` with ~25 markdown files (~100 KB total).
+
+6. **Ingest docs into ChromaDB** (downloads ~90 MB model on first run):
+   ```bash
+   python scripts/ingest.py
+   ```
+   Creates `./chroma_db/` with embedded document chunks.
+
+7. **Run the MCP agent interactively:**
+   ```bash
+   python mcp_client.py
+   # Try: "How do you define a path parameter in FastAPI?"
+   # Try: "What is the average of 4, 8, 15, 16, 23, 42?"
+   # Try: "Hello, what can you help with?"
+   ```
+
+8. **Run Week 2 tests:**
+   ```bash
+   # Tool-only tests (no gateway needed):
+   pytest test_mcp_flow.py -v -k "tool"
+
+   # All tests (requires gateway + Chroma DB):
+   pytest test_mcp_flow.py -v
+   ```
+
+---
+
+## Data Source
+
+The `data/raw_docs/` directory contains a curated subset of the
+[FastAPI official documentation](https://github.com/tiangolo/fastapi),
+specifically the top-level conceptual docs and core tutorial files under
+`docs/en/docs/`. These are plain markdown files licensed under the
+[MIT License](https://github.com/tiangolo/fastapi/blob/master/LICENSE).
+
+To re-fetch or update the docs:
 ```bash
-# Quick smoke test with curl
-curl -s -X POST http://localhost:8000/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "What is Python?"}' | python -m json.tool
-
-# Run the full test suite
-python test_router.py
+wsl bash scripts/fetch_docs.sh   # re-clones and overwrites raw_docs/
+python scripts/ingest.py         # rebuilds the Chroma collection
 ```
 
 ---
 
-## Routing Strategy
+## Why MCP?
 
-### How the heuristic works
+Before MCP (Model Context Protocol), adding a new capability to an LLM agent
+meant modifying the agent's core code: hardcoding the tool's calling convention,
+response format, and error handling directly into the orchestrator. Changing or
+replacing a tool required touching every agent that used it.
 
-The router uses three independent signals, any one of which triggers routing to
-the **large model**:
-
-| Signal | Condition | Rationale |
-|---|---|---|
-| **Keyword detection** | Prompt contains words like `explain`, `compare`, `analyze`, `evaluate`, `summarize`, `contrast`, `discuss` | These words imply multi-step reasoning, comparison, or synthesis — tasks where a larger model's broader "knowledge" and deeper context window justify the extra latency |
-| **Prompt length** | Word count ≥ 30 | A long prompt usually carries complex context or multiple sub-requirements. Short factual queries ("What is X?") are almost always under 20 words |
-| **Multiple questions** | Two or more `?` characters | Multiple questions require the model to track independent sub-tasks simultaneously — a known weakness of smaller models |
-
-**Default behaviour:** if no signal fires, the prompt goes to `llama3.2:3b`.
-
-### Why I chose this approach
-
-1. **Zero latency overhead.** The classifier runs in microseconds. A
-   ML-based classifier (e.g., a fine-tuned BERT) would add 50–200 ms of
-   inference time on every request — often more than the routing benefit.
-2. **Fully interpretable.** Every routing decision can be explained in a
-   sentence. That matters for debugging and for justifying decisions to a team.
-3. **No training data required.** A trained classifier needs labelled examples
-   of "simple" vs "complex" queries. For a portfolio project, collecting and
-   curating that dataset would dwarf the implementation work.
-
-### Honest limitations
-
-> This is a **rule-based classifier**. It is deliberately simple to make the
-> routing logic readable and auditable, but it has real weaknesses you should
-> know about before a production deployment:
-
-- **False positives on keywords.** `"Don't explain it to me"` contains
-  `explain` and would be over-routed to the large model, even though it's
-  a short negative command.
-- **Prompt length is a crude proxy.** A 35-word prompt asking for a shopping
-  list is not inherently complex. A 10-word prompt asking "What is the Riemann
-  Hypothesis?" may warrant a large model.
-- **No semantic understanding.** The heuristic cannot distinguish
-  `"Compare apples and oranges"` (trivial) from
-  `"Compare transformer and SSM architectures for long-context reasoning"` (non-trivial).
-- **Language-dependent.** All keywords are English. A multilingual gateway would
-  need per-language keyword sets or a language-agnostic approach.
-
-### What a production system would use instead
-
-1. **A trained routing classifier** — fine-tuned on query–complexity labels
-   (e.g., a DistilBERT or TinyBERT model). Adds latency but much higher accuracy.
-2. **LLM self-assessment** — ask the small model to rate its own confidence
-   (`0–1`) and escalate to the large model if confidence < threshold. Uses
-   token log-probabilities. Elegant but adds one model call per request.
-3. **Semantic embedding similarity** — embed the prompt and compare to
-   a pre-computed centroid of "complex" vs "simple" query embeddings. Fast
-   after the embedding step, language-agnostic, but requires an embedding
-   model and labelled cluster centroids.
-4. **Cost-aware routing** — combine complexity with a cost/latency budget.
-   Route to the large model only when complexity is high AND the caller has
-   not exceeded their latency SLA. Used in systems like [RouteLLM](https://github.com/lm-sys/RouteLLM).
+MCP solves this by **standardising how agents discover and invoke tools**. Each
+tool server declares its own schema — tool name, input types, description. Any
+MCP-compliant client can discover and call any MCP server without prior
+knowledge of its internals. In this project: if we replaced `retrieval_server.py`
+with a web-search server tomorrow, `mcp_client.py` would call it identically,
+using the same `session.call_tool()` method. The LLM routing prompt would need a
+one-line description update, but zero code changes in the orchestrator or the
+other tool servers. This is the same principle as REST or gRPC for microservices —
+a protocol contract that decouples producers from consumers.
 
 ---
 
-## Fallback Behaviour
+## Routing Strategy (Week 1)
 
-If the **large model times out** (default: 15 seconds) or returns any error:
+The router uses three heuristic signals — keyword detection, prompt length ≥ 30
+words, or multiple question marks — to route to `llama3.1:8b` (large), otherwise
+defaulting to `llama3.2:3b` (small). See the Week 1 design notes below.
 
-1. The router logs a clear warning:
-   ```
-   ⚠️  FALLBACK triggered | Large model failed: TimeoutException: ... | Retrying with small model.
-   ```
-2. The same prompt is immediately retried against `llama3.2:3b`.
-3. The response includes `"fell_back": true` so callers and dashboards can
-   detect degraded operation.
+### Fallback Behaviour
 
-To simulate fallback manually:
-```bash
-# Start the router pointing at a dead LiteLLM port
-LITELLM_BASE_URL=http://localhost:9999 uvicorn router:app --port 8001
-
-# Send a complex query – you'll see the fallback warning in the router logs
-curl -s -X POST http://localhost:8001/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Compare and analyze the differences between RNNs and Transformers."}' \
-  | python -m json.tool
-```
-
-Expected response:
-```json
-{
-  "response": "...",
-  "model_used": "small-model",
-  "fell_back": true,
-  "latency_ms": 3241.5
-}
-```
+If the large model times out (default: 45 seconds) or errors:
+1. The router logs a clear warning with the exception type.
+2. The same prompt is retried against `llama3.2:3b`.
+3. The response includes `"fell_back": true` for observability.
 
 ---
 
 ## API Reference
 
-### `POST /chat/completions`
+### `POST /chat/completions` (router.py, port 8000)
 
-**Request body:**
+**Request:**
 ```json
 { "prompt": "Your question here" }
 ```
@@ -225,14 +220,12 @@ Expected response:
 **Response:**
 ```json
 {
-  "response":    "The model's answer text",
-  "model_used":  "small-model | large-model",
-  "fell_back":   false,
-  "latency_ms":  1234.56
+  "response":   "The model's answer text",
+  "model_used": "small-model | large-model",
+  "fell_back":  false,
+  "latency_ms": 1234.56
 }
 ```
-
-**Error (503):** Both models unavailable.
 
 ---
 
@@ -242,19 +235,34 @@ Expected response:
 |---|---|---|
 | `LITELLM_BASE_URL` | `http://localhost:4000` | LiteLLM proxy URL |
 | `LITELLM_API_KEY` | `sk-local-dev` | Must match `LITELLM_MASTER_KEY` in docker-compose |
-| `LARGE_MODEL_TIMEOUT` | `15` seconds | Timeout before fallback triggers |
-| `LONG_PROMPT_WORD_THRESHOLD` | `30` words | Complexity signal: prompt length |
-| `MULTI_QUESTION_THRESHOLD` | `2` question marks | Complexity signal: multiple questions |
+| `LARGE_MODEL_TIMEOUT` | `45` seconds | Timeout before fallback triggers |
+| `COLLECTION_NAME` | `docs` | ChromaDB collection name (ingest + retrieval) |
+| `EMBEDDING_MODEL_NAME` | `all-MiniLM-L6-v2` | Must match across ingest + retrieval |
+| `TOP_K` | `3` | Retrieval results returned per query |
 
 ---
 
-## Week 1 Design Decisions (Interview Notes)
+## Design Decisions (Interview Notes)
+
+### Week 1
 
 | Decision | Rationale |
 |---|---|
-| **LiteLLM as proxy** | Normalises Ollama's near-OpenAI API to the actual OpenAI spec; allows swapping Ollama for a cloud provider without touching the router |
-| **FastAPI for the gateway** | Async by default (matches httpx's async client); automatic OpenAPI docs at `/docs`; Pydantic models enforce the request/response schema |
-| **httpx over the openai SDK** | Fine-grained timeout control per call; no need for a real API key object; lighter dependency |
-| **Model aliases in LiteLLM** | Decouples routing logic from model version strings; upgrading a model = one YAML change |
-| **Fallback to small, not retry large** | A timed-out large model is likely still slow; retrying doubles user wait time for no benefit |
-| **Structured JSON response with metadata** | Observability without a full APM stack; callers can log routing decisions and detect degraded mode |
+| **LiteLLM as proxy** | Normalises Ollama's near-OpenAI API to the full OpenAI spec; swapping a cloud model requires only a YAML change |
+| **FastAPI for the gateway** | Async by default; automatic OpenAPI docs at `/docs`; Pydantic enforces schema |
+| **httpx over openai SDK** | Fine-grained per-call timeout control; no real API key object required |
+| **Model aliases in LiteLLM** | Decouples routing logic from model version strings |
+| **Fallback to small, not retry large** | A timed-out model is likely still slow; retrying doubles wait time |
+
+### Week 2
+
+| Decision | Rationale |
+|---|---|
+| **all-MiniLM-L6-v2 embeddings** | 90 MB, free, local, ~5k sent/sec on CPU — fits a demo corpus without any API cost |
+| **Heading-based chunking** | Splits on `##` boundaries to preserve semantic coherence; sliding window handles oversized sections |
+| **350-word chunks** | ≈450 tokens — fits within MiniLM's 512-token context window with headroom |
+| **50-word overlap** | Prevents sentences straddling chunk boundaries from being missed in retrieval |
+| **Top-K = 3** | Enough context for multi-part questions; small enough not to overwhelm the LLM's context window |
+| **stdio MCP transport** | No port allocation or firewall config; subprocess lifecycle is simple; standard for local tools |
+| **Spawn-per-call subprocess** | Simpler lifecycle; clean state; acceptable latency (~1-2s startup) for a demo |
+| **Safe AST arithmetic** | `ast.parse()` + restricted node visitor — never `eval()` on user input |
