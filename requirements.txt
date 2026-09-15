@@ -17,3 +17,6 @@ sentence-transformers>=3.0.0  # Free local embeddings – all-MiniLM-L6-v2 (no A
 # Testing
 pytest>=8.0.0              # Test runner
 pytest-asyncio>=0.23.0     # Async test support (mcp_client uses asyncio)
+
+# Observability / Experiment Tracking
+mlflow>=2.14.0             # Experiment tracking and model registry

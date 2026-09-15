@@ -242,9 +242,14 @@ async def call_mcp_tool(
 
 # ── Step 3: Generate final answer using tool context ─────────────────────────
 
+_FINAL_ANSWER_SYSTEM_PROMPT = (
+    "You must answer the user's question directly and concisely in 1 to 2 sentences. "
+    "Do NOT use conversational filler like 'According to the documentation' or "
+    "'The answer is'. Just provide the raw facts."
+)
+
 _FINAL_ANSWER_PROMPT = """\
-You are a helpful assistant. Answer the user's question using the provided context.
-If the context doesn't fully answer the question, say so honestly.
+System: {system}
 
 User question: {query}
 
@@ -263,6 +268,7 @@ def generate_final_answer(query: str, tool_name: str, tool_result: str) -> str:
     allowing it to synthesize a more accurate and grounded response.
     """
     prompt = _FINAL_ANSWER_PROMPT.format(
+        system=_FINAL_ANSWER_SYSTEM_PROMPT,
         query=query,
         tool_name=tool_name,
         tool_result=tool_result,
@@ -281,12 +287,20 @@ def generate_final_answer(query: str, tool_name: str, tool_result: str) -> str:
         return f"(Tool result — LLM synthesis unavailable)\n{tool_result}"
 
 
+_DIRECT_ANSWER_PROMPT = (
+    "{system}\n\nUser question: {query}\n\nAnswer:"
+)
+
 def generate_direct_answer(query: str) -> str:
     """Call the gateway directly (no tool) for a conversational response."""
+    prompt = _DIRECT_ANSWER_PROMPT.format(
+        system=_FINAL_ANSWER_SYSTEM_PROMPT,
+        query=query,
+    )
     try:
         resp = requests.post(
             GATEWAY_URL,
-            json={"prompt": query},
+            json={"prompt": prompt},
             timeout=GATEWAY_TIMEOUT,
         )
         resp.raise_for_status()

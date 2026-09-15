@@ -266,3 +266,122 @@ If the large model times out (default: 45 seconds) or errors:
 | **stdio MCP transport** | No port allocation or firewall config; subprocess lifecycle is simple; standard for local tools |
 | **Spawn-per-call subprocess** | Simpler lifecycle; clean state; acceptable latency (~1-2s startup) for a demo |
 | **Safe AST arithmetic** | `ast.parse()` + restricted node visitor — never `eval()` on user input |
+
+### Week 3
+
+| Decision | Rationale |
+|---|---|
+| **Semantic similarity scoring** | Free, local, paraphrase-robust — no judge LLM or API needed |
+| **Content hash as gold set version** | Changes exactly when the file changes; no manual bump required |
+| **MLflow local tracking (`./mlruns`)** | Zero infrastructure — just run `mlflow ui`; same API as a remote server |
+| **Router config snapshotted into MLflow params** | Guarantees every run is reproducible and comparable even if config changes |
+| **asyncio.run() per question** | Avoids "loop already running" conflicts from mcp_client internals |
+
+---
+
+## Evaluation & Versioning (Week 3)
+
+### Overview
+
+`mlops/run_eval.py` runs the full pipeline against a hand-curated gold standard
+and logs results to a local MLflow server so you can track regressions across
+configuration changes.
+
+```
+mlops/
+  gold_set.jsonl      # Hand-curated Q&A pairs with expected answers + source doc
+  run_eval.py         # Evaluation pipeline (load -> query -> score -> log)
+  compare_runs.py     # A/B comparison of two MLflow runs
+  results_latest.csv  # Per-question results from the most recent run (generated)
+```
+
+### The Gold Set (`mlops/gold_set.jsonl`)
+
+Each line is a JSON object:
+```json
+{
+  "question":        "When should you define a path operation function with async def?",
+  "expected_answer": "You should use async def when using third-party libraries that require you to call them with await.",
+  "source_doc":      "async.md"
+}
+```
+
+`source_doc` records which FastAPI documentation file the answer comes from.
+It is not used for scoring but helps you trace failures back to the retrieval step.
+
+### How Scoring Works
+
+For each question:
+1. The question is sent through the full pipeline (`mcp_client.run_query_async`):
+   routing decision → optional tool call → final LLM answer.
+2. Both the `expected_answer` and the actual answer are embedded with `all-MiniLM-L6-v2`
+   (the same model used in ingestion and retrieval, so embeddings are comparable).
+3. **Cosine similarity** between the two embeddings is computed. Range: `[-1, 1]`.
+4. If `similarity >= SIMILARITY_THRESHOLD` (default `0.75`), the question **passes**.
+
+Aggregate metrics logged to MLflow:
+- `pass_rate` — fraction of questions that passed
+- `avg_similarity` — mean cosine similarity across all questions
+
+### Scoring Limitations (be honest about these)
+
+Semantic similarity is a practical proxy, not a gold standard. Known failure modes:
+
+| Failure mode | Example |
+|---|---|
+| **Topically correct but factually wrong** | "Use `async def` for CPU-bound tasks" scores high against the correct answer because it shares the same keywords (`async def`), even though it's the opposite of correct. |
+| **Short answers are easy to fool** | Expected: `"Use uv."` — almost any answer that mentions `uv` scores above threshold. |
+| **Wrong source, right answer** | The pipeline could retrieve from a different doc and still produce a correct-sounding answer. Similarity score cannot detect this. |
+| **Threshold sensitivity** | Moving the threshold from `0.75` to `0.80` changes the reported pass rate without changing the underlying answer quality. |
+
+**What it is good for:** catching regressions. If your `pass_rate` drops by 10 percentage
+points after changing the routing threshold, something meaningful changed. It is not a
+certificate of correctness.
+
+### Reproducing an Evaluation Run
+
+Prerequisites: gateway running at `localhost:8000`.
+
+```bash
+# Install dependencies (only needed once)
+pip install -r requirements.txt
+
+# Run evaluation (takes ~5-10 minutes for 24 questions over a local LLM)
+python mlops/run_eval.py
+
+# Open the MLflow dashboard
+mlflow ui
+# Navigate to http://localhost:5000
+```
+
+### A/B Comparison
+
+To compare two configurations:
+
+```bash
+# Step 1: Run the baseline
+python mlops/run_eval.py
+# Note the Run ID printed in the summary (e.g. "abc12345...")
+
+# Step 2: Change ONE thing.  For example, lower the routing threshold
+#   in router.py: LONG_PROMPT_WORD_THRESHOLD = 20  (was 30)
+#   This routes more queries to the large model.
+
+# Step 3: Run eval again
+python mlops/run_eval.py
+# Note the second Run ID
+
+# Step 4a: CLI comparison table
+python mlops/compare_runs.py <run_id_baseline> <run_id_changed>
+
+# Step 4b: Auto-compare the two most recent runs
+python mlops/compare_runs.py
+
+# Step 4c: MLflow UI (visual)
+mlflow ui
+# Select both runs in the experiment view, click "Compare"
+```
+
+The comparison table shows:
+- `pass_rate` and `avg_similarity` delta (`B - A`)
+- Which parameters changed between runs (marked with `*`)

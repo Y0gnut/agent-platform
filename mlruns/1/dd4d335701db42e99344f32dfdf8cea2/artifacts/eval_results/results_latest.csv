@@ -1,0 +1,92 @@
+id,question,source_doc,expected_answer,actual_answer,tool_used,similarity,passed,latency_ms
+1,When should you define a path operation function with async def in FastAPI?,async.md,You should use async def when using third-party libraries that require you to call them with await.,"Based on the provided context, you should define a path operation function with `async def` in FastAPI when:
+
+1. You want the function to be ""awaited"" directly, without being run in an external threadpool.
+2. Your path operation function uses code that performs blocking I/O operations, as mentioned in the context.
+
+However, the context also mentions that even if you use `def` (normal function) instead of `async def` for your path operation function, the effect in FastAPI might be opposite to what you expect, and it's generally recommended to use `async def` for path operation functions.
+
+So, to summarize, use `async def` for path operation functions unless you have a specific reason to use `def` and are aware of the implications.",search_documents,0.6207,False,25359.0
+2,What environment variable does the fastapi dev command set before importing your app?,fastapi-cli.md,It sets the FASTAPI_ENV environment variable to development.,"According to the provided context, specifically Result 2, the environment variable set by the `fastapi dev` command before importing your app is `FASTAPI_ENV` with a value of `development`.",search_documents,0.7542,True,17813.0
+3,In what order are multiple middlewares executed on the response path in FastAPI?,tutorial__middleware.md,"On the response path, the middlewares are executed from the innermost (first added) to the outermost (last added) after the route is processed.","Based on the provided context, specifically from Result 2, the order in which multiple middlewares are executed on the response path in FastAPI is:
+
+* The first middleware added runs last
+* The last middleware added runs first
+
+In other words, on the response path, the outermost middleware (the last one added) runs last, and the innermost middleware (the first one added) runs first.
+
+For example, given the following code:
+```python
+app.add_middleware(MiddlewareA)
+app.add_middleware(MiddlewareB)
+```
+The execution order on the response path would be:
+* route → MiddlewareA → MiddlewareB",search_documents,0.7243,False,20594.0
+4,How should you declare your path operation function if you are using a library that does not support await?,async.md,You should declare it normally with just 'def' instead of 'async def'.,"If you are using a library that does not support `await`, you should declare your path operation function with `def` instead of `async def`. Here is an example:
+
+```Python
+@app.get('/')
+def results():
+    results = some_library()
+    return results
+```",search_documents,0.6102,False,17188.0
+5,What does asynchronous code basically mean for Python?,async.md,It means the program can pause and wait for a slow I/O operation to finish while doing other productive work in the meantime.,"Asynchronous code in Python, as described in the context, is a way of writing code that can run tasks concurrently without blocking the main execution flow. This is achieved using the `async` and `await` syntax, which allows for the use of coroutines.
+
+In essence, asynchronous code means that the code can do other things while waiting for a task to complete, rather than blocking the execution and waiting for the task to finish. This makes the code more efficient and easier to write, especially when working with tasks that take a long time to complete.
+
+The context mentions that this style of asynchronous code is relatively new in Python and was previously more complex to understand and debug. However, it is now a widely used and recommended way to write asynchronous code in Python.",search_documents,0.4849,False,20313.0
+6,Are machine learning and image processing considered I/O bound operations?,async.md,"No, they require complex math processing and are considered CPU bound operations.","The provided context indicates that machine learning and image processing are considered CPU-bound operations. According to the text, CPU-bound operations are ""things that require complex math processing."" Examples of CPU-bound operations include audio or image processing, computer vision, machine learning, and deep learning. Therefore, the answer is: No, machine learning and image processing are not considered I/O bound operations, but rather CPU-bound operations.",search_documents,0.6767,False,21172.0
+7,What library does FastAPI use internally to maintain compatibility with both asyncio and Trio?,async.md,FastAPI (through Starlette) uses AnyIO.,The library that FastAPI uses internally to maintain compatibility with both asyncio and Trio is AnyIO.,search_documents,0.7407,False,19547.0
+8,Why does Uvicorn show better performance than FastAPI in raw benchmarks?,benchmarks.md,"Uvicorn is an ASGI server without the extra application code, routing, and data validation overhead that FastAPI provides.","Based on the provided context, it seems that Uvicorn shows better performance than FastAPI in raw benchmarks is because Uvicorn itself is one of the fastest Python web servers, and when used as a WSGI server for FastAPI applications, it allows them to run at high speeds, only slightly below Starlette and Uvicorn itself. However, it doesn't provide the specific reasons why Uvicorn is faster than FastAPI.
+
+The context does not fully answer the question as to why Uvicorn shows better performance than FastAPI in raw benchmarks.",search_documents,0.7582,True,21657.0
+9,"If you build an API directly with Starlette instead of FastAPI, what features must you implement manually?",benchmarks.md,"You would have to manually implement data validation, serialization, and automatic documentation.","The context does not provide explicit information about the features that must be implemented manually if you build an API directly with Starlette instead of FastAPI. It only mentions upgrades and version changes of Starlette, but does not detail what features are specific to FastAPI and need to be manually implemented in a Starlette-based API. Therefore, I must answer honestly: the context does not fully answer the question.",search_documents,0.257,False,20156.0
+10,What is the default IP address that the 'fastapi dev' command listens on?,fastapi-cli.md,It listens on the IP address 127.0.0.1 (localhost).,"The default IP address that the 'fastapi dev' command listens on is 127.0.0.1, which is the IP for your machine to communicate with itself alone (localhost).",search_documents,0.6066,False,16391.0
+11,Is auto-reload enabled by default when you use the 'fastapi run' command?,fastapi-cli.md,"No, auto-reload is disabled by default in production mode.","No, auto-reload is not enabled by default when you use the 'fastapi run' command. According to the context, auto-reload is enabled by default when using the 'fastapi dev' command, but 'fastapi run' currently leaves the 'FASTAPI_ENV' environment variable unchanged, so auto-reload is not enabled.",search_documents,0.6735,False,17750.0
+12,How can you explicitly configure your app entrypoint for the FastAPI CLI in pyproject.toml?,fastapi-cli.md,You can set the 'entrypoint' value under the '[tool.fastapi]' section in the pyproject.toml file.,"To explicitly configure your app entrypoint for the FastAPI CLI in pyproject.toml, you can use the following syntax:
+
+```
+[tool.fastapi]
+entrypoint = ""main:app""
+```
+
+Or, if your code is structured differently:
+
+```
+[tool.fastapi]
+entrypoint = ""backend.main:app""
+```
+
+This will tell the FastAPI command to import the app from the specified location.",search_documents,0.8224,True,18313.0
+13,Which ORM does the official Full Stack FastAPI Template use for SQL database interactions?,project-generation.md,It uses SQLModel for Python SQL database interactions.,"Unfortunately, the provided context does not mention the ORM used by the official Full Stack FastAPI Template for SQL database interactions.",search_documents,0.4516,False,16000.0
+14,What frontend framework is utilized in the Full Stack FastAPI Template?,project-generation.md,"It uses React along with TypeScript, Vite, and Tailwind CSS.","The context does not explicitly mention the frontend framework used in the Full Stack FastAPI Template. However, based on the title of the template, it is likely that the frontend framework is not specified and that the template is designed to work with a variety of frontend frameworks, or possibly none at all (e.g., using a RESTful API for frontend communication).",search_documents,0.2267,False,17297.0
+15,How are translation pull requests currently generated in the FastAPI repository?,translations.md,They are generated by LLMs guided by specific prompts and native speakers.,"Based on the provided context, it appears that translation pull requests in the FastAPI repository are currently generated using Large Language Models (LLMs) guided by prompts designed by the FastAPI team together with the community of native speakers for each supported language. 
+
+However, the specific implementation details and tools used for generating these pull requests are not explicitly mentioned in the provided context. 
+
+Therefore, the answer to the question is that the exact process of generating translation pull requests in the FastAPI repository is not fully clear from the provided information.",search_documents,0.3713,False,19125.0
+16,How many volunteers are required at minimum to request a new language translation?,translations.md,At least 3 people are needed who are willing to commit to helping maintain that language.,"According to the context, to request a new language translation, you need to find 2 other people who would be willing to be reviewing translation PRs for that language with you. So, the minimum number of volunteers required is **2**.",search_documents,0.6124,False,17625.0
+17,How do you specify the API version that appears in the OpenAPI specification?,tutorial__metadata.md,You can set it using the 'version' string parameter when initializing the FastAPI application.,"The context provided doesn't fully answer the question, but it does mention ""extensions and updates to the OpenAPI schema in each *path operation*"" and ""OpenAPI metadata parameters"" in the features section of the release notes. However, it doesn't specifically address how to specify the API version that appears in the OpenAPI specification. 
+
+A separate search or additional context is needed to find the answer to this question.",search_documents,0.593,False,18266.0
+18,How can you completely disable the Swagger UI documentation?,tutorial__metadata.md,You can disable it by setting 'docs_url=None'.,"Unfortunately, the provided context does not fully answer the question of how to completely disable the Swagger UI documentation. The context shows several release notes for the FastAPI framework, including some related to Swagger UI, but it does not provide a clear instruction on how to disable it completely.
+
+However, one of the release notes mentions pinning the Swagger UI version to 5.9.0 temporarily to handle a bug crashing it in 5.9.1 (Result 3). This might suggest that Swagger UI can be disabled or pinned to a specific version to resolve issues, but it does not provide a clear step-by-step guide on how to do so.
+
+If you're looking for a way to completely disable Swagger UI, I would recommend searching for official FastAPI documentation or resources that provide a clear instruction on how to do so.",search_documents,0.3976,False,20468.0
+19,How can you change the default /openapi.json endpoint to a different URL?,tutorial__metadata.md,You can configure it by setting a new URL string to the 'openapi_url' parameter.,"You can change the default `/openapi.json` endpoint to a different URL by using the `openapi_url` parameter. For example, to set it to be served at `/api/v1/openapi.json`, you can configure it as follows:
+
+`openapi_url=""/api/v1/openapi.json""`
+
+This parameter can be set in the `FastAPI` class to customize the URL of the OpenAPI schema.",search_documents,0.8078,True,20500.0
+20,What determines the display order of tags in the API documentation UI?,tutorial__metadata.md,The order of the dictionaries in the 'openapi_tags' list determines their display order.,"The context provided does not mention anything about the display order of tags in the API documentation UI. The search results are related to release notes, features, and documentation updates for the FastAPI framework, but do not provide any information about the display order of tags.",search_documents,0.6716,False,19875.0
+21,Which Python decorator is required to create a middleware function?,tutorial__middleware.md,"The '@app.middleware(""http"")' decorator is used.","The decorator required to create a middleware function is `@app.middleware(""http"")`.",search_documents,0.8477,True,19016.0
+22,When do background tasks execute if you have middlewares configured?,tutorial__middleware.md,Background tasks will run after all the middlewares have finished their execution.,Background tasks will execute after all middleware have been run.,search_documents,0.9605,True,17250.0
+23,What is the recommended tool for managing a FastAPI project and its virtual environment?,virtual-environments.md,The official recommendation is to use 'uv'.,"For managing a FastAPI project and its virtual environment, the recommended tool is **uv** (https://docs.astral.sh/uv/), according to the provided context.",search_documents,0.6123,False,15219.0
+24,What is the specific command to create a new project and virtual environment with uv?,virtual-environments.md,You use the command 'uv init <project_name> --bare'.,"The specific command to create a new project and virtual environment with `uv` is:
+
+```bash
+$ uv init awesome-project --bare
+```
+
+This command creates a new project named `awesome-project` with a virtual environment automatically created and managed by `uv`.",search_documents,0.7247,False,15313.0
