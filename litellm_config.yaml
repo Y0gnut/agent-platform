@@ -1,0 +1,38 @@
+# litellm_config.yaml
+#
+# This file tells LiteLLM which models exist and how to reach them.
+# We define two human-friendly aliases - "small-model" and "large-model" -
+# so the router never hard-codes Ollama model strings. If we swap llama3.2:3b
+# for another small model later, we only change this file, not the router code.
+#
+# Why use aliases?
+#   In a production system you might have many models behind a proxy. Aliases
+#   decouple the "what the caller asks for" from "what actually runs", which
+#   is essential when you want to A/B test models or perform canary rollouts.
+
+model_list:
+  # -- Small model: llama3.2:3b ---------------------------------------------
+  # Used for simple / short queries. Faster and cheaper (lower VRAM / CPU).
+  - model_name: small-model          # Alias callers use
+    litellm_params:
+      model: ollama/llama3.2:3b      # "ollama/" prefix tells LiteLLM to use
+                                     # the Ollama provider driver
+      api_base: http://host.docker.internal:11434  # Host Ollama instance (Windows host via Docker bridge)
+      # No api_key needed - Ollama has no auth by default
+      request_timeout: 30            # Generous timeout; 3B model is fast
+
+  # -- Large model: llama3.1:8b ---------------------------------------------
+  # Used for complex queries requiring deeper reasoning or more context.
+  # Slower and uses more VRAM, so we only invoke it when justified.
+  - model_name: large-model          # Alias callers use
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://host.docker.internal:11434
+      request_timeout: 60            # 8B is slower; allow more time
+
+# -- General LiteLLM settings ------------------------------------------------
+general_settings:
+  # Master key must match LITELLM_MASTER_KEY env var in docker-compose.yml.
+  master_key: "sk-local-dev"
+  # Log every request so we can trace routing decisions.
+  set_verbose: true

@@ -1,0 +1,30 @@
+# docker-compose.yml
+# LiteLLM proxy container for Week 1 Local LLM Gateway.
+#
+# Architecture:
+#   - Ollama runs natively on the Windows host on port 11434 (using local GPU/CPU & models).
+#   - LiteLLM proxy runs in this Docker container on port 4000.
+#   - It connects to host Ollama via http://host.docker.internal:11434.
+#   - The FastAPI router on the host connects to LiteLLM at http://localhost:4000.
+
+version: "3.9"
+
+services:
+  # ── LiteLLM Proxy ───────────────────────────────────────────────────────────
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm
+    # Expose port 4000 – this is the endpoint router.py will call.
+    ports:
+      - "4000:4000"
+    volumes:
+      # Mount our config file so LiteLLM knows about our model aliases.
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    extra_hosts:
+      # Ensure container can resolve host.docker.internal to reach Windows host Ollama
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    environment:
+      # Master key for local dev authentication
+      LITELLM_MASTER_KEY: "sk-local-dev"
