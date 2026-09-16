@@ -52,6 +52,10 @@ import pathlib
 
 import requests  # sync — used for the gateway calls (simpler than httpx here)
 
+# ── Langfuse observability (optional — no-op if not configured) ─────────────────
+from gateway.langfuse_client import flush, get_langfuse, start_trace, timed_span
+_lf = get_langfuse()  # None if LANGFUSE_PUBLIC_KEY/SECRET_KEY not set
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -99,7 +103,7 @@ User query: {query}
 JSON:"""
 
 
-def decide_tool(query: str) -> dict:
+def decide_tool(query: str, trace_id: str = "") -> dict:
     """
     Ask the LLM gateway to classify the query and return the tool routing decision.
 
@@ -109,14 +113,23 @@ def decide_tool(query: str) -> dict:
     Uses the Week 1 gateway's /chat/completions endpoint so the routing LLM
     benefits from the gateway's model selection and fallback logic — we don't
     need to manage that here.
+
+    Args:
+        query: The user query string.
+        trace_id: Optional Langfuse trace ID to propagate to the router for
+                  linked tracing. Passed via X-Langfuse-Trace-Id header.
     """
     routing_prompt = _ROUTING_SYSTEM_PROMPT.replace("{query}", query)
     logger.info("Requesting tool decision for query: %r", query)
 
     try:
+        headers = {}
+        if trace_id:
+            headers["x-langfuse-trace-id"] = trace_id
         resp = requests.post(
             GATEWAY_URL,
             json={"prompt": routing_prompt},
+            headers=headers,
             timeout=GATEWAY_TIMEOUT,
         )
         resp.raise_for_status()
@@ -259,13 +272,19 @@ Context from {tool_name}:
 Answer:"""
 
 
-def generate_final_answer(query: str, tool_name: str, tool_result: str) -> str:
+def generate_final_answer(query: str, tool_name: str, tool_result: str, trace_id: str = "") -> str:
     """
     Feed the tool result back to the LLM as context and produce a final answer.
 
     This is the "augmented generation" step in RAG (Retrieval-Augmented Generation).
     The LLM receives both the user's question and the retrieved/computed context,
     allowing it to synthesize a more accurate and grounded response.
+
+    Args:
+        query: The original user query.
+        tool_name: Name of the tool that was called.
+        tool_result: Output from the tool call.
+        trace_id: Optional Langfuse trace ID to propagate for linked tracing.
     """
     prompt = _FINAL_ANSWER_PROMPT.format(
         system=_FINAL_ANSWER_SYSTEM_PROMPT,
@@ -274,9 +293,13 @@ def generate_final_answer(query: str, tool_name: str, tool_result: str) -> str:
         tool_result=tool_result,
     )
     try:
+        headers = {}
+        if trace_id:
+            headers["x-langfuse-trace-id"] = trace_id
         resp = requests.post(
             GATEWAY_URL,
             json={"prompt": prompt},
+            headers=headers,
             timeout=GATEWAY_TIMEOUT,
         )
         resp.raise_for_status()
@@ -291,16 +314,20 @@ _DIRECT_ANSWER_PROMPT = (
     "{system}\n\nUser question: {query}\n\nAnswer:"
 )
 
-def generate_direct_answer(query: str) -> str:
+def generate_direct_answer(query: str, trace_id: str = "") -> str:
     """Call the gateway directly (no tool) for a conversational response."""
     prompt = _DIRECT_ANSWER_PROMPT.format(
         system=_FINAL_ANSWER_SYSTEM_PROMPT,
         query=query,
     )
     try:
+        headers = {}
+        if trace_id:
+            headers["x-langfuse-trace-id"] = trace_id
         resp = requests.post(
             GATEWAY_URL,
             json={"prompt": prompt},
+            headers=headers,
             timeout=GATEWAY_TIMEOUT,
         )
         resp.raise_for_status()
@@ -328,30 +355,70 @@ async def run_query_async(query: str) -> dict:
     """
     start = time.monotonic()
 
-    # ── Step 1: decide tool ────────────────────────────────────────────────────
-    decision = decide_tool(query)
-    tool_name = decision.get("tool", "none")
-    tool_args = decision.get("args", {})
+    # ── Langfuse: create root trace for this user request ──────────────────────
+    lf_trace = start_trace(_lf, name="mcp_client:run_query", user_query=query)
+    trace_id = lf_trace.id  # "" if Langfuse is disabled (NoopTrace)
+
+    # ── Step 1: decide tool ─────────────────────────────────────────────────────
+    with timed_span(lf_trace, "decide_tool", input_data=query) as dt_span:
+        decision = decide_tool(query, trace_id=trace_id)
+        tool_name = decision.get("tool", "none")
+        tool_args = decision.get("args", {})
+        dt_span.update(
+            output=str(decision),
+            metadata={"tool_selected": tool_name, "tool_args": str(tool_args)},
+        )
 
     tool_result = ""
     final_response = ""
 
-    # ── Step 2: call tool if needed ────────────────────────────────────────────
+    # ── Step 2: call tool if needed ─────────────────────────────────────────────
     if tool_name != "none" and tool_name in TOOL_SERVER_MAP:
         logger.info("==> Using tool: %s | args: %s", tool_name, tool_args)
         server_script = TOOL_SERVER_MAP[tool_name]
-        tool_result = await call_mcp_tool(server_script, tool_name, tool_args)
+        with timed_span(lf_trace, f"mcp_tool:{tool_name}", input_data=str(tool_args)) as tool_span:
+            tool_result = await call_mcp_tool(server_script, tool_name, tool_args)
+            tool_span.update(
+                output=tool_result[:500],
+                metadata={
+                    "tool_name": tool_name,
+                    "tool_args": str(tool_args),
+                    "result_length_chars": len(tool_result),
+                },
+            )
 
-        # ── Step 3: generate answer with tool context ──────────────────────────
+        # ── Step 3: generate answer with tool context ────────────────────────────
         logger.info("==> Generating final answer with tool context…")
-        final_response = generate_final_answer(query, tool_name, tool_result)
+        with timed_span(lf_trace, "generate_final_answer", input_data=query) as ans_span:
+            final_response = generate_final_answer(query, tool_name, tool_result, trace_id=trace_id)
+            ans_span.update(
+                output=final_response[:500],
+                metadata={"response_length_chars": len(final_response)},
+            )
     else:
         # No tool needed — answer directly
         logger.info("==> No tool needed. Answering directly.")
         tool_name = "none"
-        final_response = generate_direct_answer(query)
+        with timed_span(lf_trace, "generate_direct_answer", input_data=query) as ans_span:
+            final_response = generate_direct_answer(query, trace_id=trace_id)
+            ans_span.update(
+                output=final_response[:500],
+                metadata={"response_length_chars": len(final_response)},
+            )
 
     latency_ms = (time.monotonic() - start) * 1000
+
+    # ── Langfuse: finalise root trace ──────────────────────────────────────────────
+    lf_trace.update(
+        output=final_response[:500],
+        metadata={
+            "tool_used": tool_name,
+            "latency_ms": round(latency_ms, 1),
+            "response_length_chars": len(final_response),
+            "tool_result_length": len(tool_result),
+        },
+    )
+    flush(_lf)
 
     result = {
         "query": query,

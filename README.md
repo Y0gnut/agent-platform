@@ -1,53 +1,72 @@
-# agent-platform — Week 1 + 2: Local LLM Gateway & MCP Tool Layer
+# agent-platform — Local AI Agent Platform
 
-A **local, free, production-inspired AI agent platform** built across two weeks,
-demonstrating core AI infrastructure skills: LLM routing, RAG pipelines, and
-tool-calling via the Model Context Protocol (MCP).
+A **fully local, free, production-inspired AI agent platform** built across four weeks as a portfolio project demonstrating core AI infrastructure skills. The system routes user queries between two local LLMs, calls external tools via the Model Context Protocol, evaluates answer quality with a semantic similarity pipeline, and traces every request end-to-end through a self-hosted observability stack — all running on a single developer laptop with no external API keys.
 
 ---
 
-## Architecture Overview
+## Architecture
 
-```
-User / Test Script
-       │  question or command
-       ▼
-┌────────────────────────────────────┐
-│          mcp_client.py             │  Orchestrator
-│  1. Ask LLM: which tool to use?   │
-│  2. Call tool via MCP (if needed) │
-│  3. Augment prompt with result    │
-│  4. Generate final answer         │
-└───┬──────────────┬─────────────────┘
-    │ stdio/MCP    │ POST /chat/completions
-    │              ▼
-    │  ┌─────────────────────────────────┐
-    │  │         router.py               │  FastAPI – port 8000
-    │  │  1. Classify prompt complexity  │
-    │  │  2. Route to small or large     │
-    │  │  3. Fallback on timeout/error   │
-    │  └────────────┬────────────────────┘
-    │               │  OpenAI-compatible REST
-    │               ▼
-    │  ┌─────────────────────────────────┐
-    │  │        LiteLLM Proxy            │  Docker – port 4000
-    │  │  Aliases: small-model,          │
-    │  │           large-model           │
-    │  └────────────┬────────────────────┘
-    │               │  http://host.docker.internal:11434
-    │               ▼
-    │  ┌─────────────────────────────────┐
-    │  │    Ollama (Windows host)        │  port 11434
-    │  │  llama3.2:3b  (small-model)    │
-    │  │  llama3.1:8b  (large-model)    │
-    │  └─────────────────────────────────┘
-    │
-    │  MCP stdio (subprocess)
-    ├──► retrieval_server.py   ──► ChromaDB (./chroma_db/)
-    │                               all-MiniLM-L6-v2 embeddings
-    │                               FastAPI docs (~20 files)
-    │
-    └──► calculator_server.py  ──► safe AST arithmetic evaluator
+```mermaid
+flowchart TD
+    U([User / Test]) -->|query| MC
+
+    subgraph Harness["Week 4 · Test Harness (pytest tests/)"]
+        T1[test_tools.py\nunit tests]
+        T2[test_agent_output.py\nintegration tests]
+        T3[test_retrieval.py\nhit-rate tests]
+        T4[test_regression.py\nregression gate]
+    end
+
+    subgraph Orchestration["Week 2 · Orchestration Layer"]
+        MC[mcp_client.py\nOrchestrator]
+    end
+
+    subgraph Gateway["Week 1 · LLM Gateway (port 8000)"]
+        R[router.py\nFastAPI]
+        R -->|classify_prompt| CLS{simple or\ncomplex?}
+        CLS -->|complex| LM[large-model\nllama3.1:8b]
+        CLS -->|simple| SM[small-model\nllama3.2:3b]
+        LM -->|timeout/error| SM
+    end
+
+    subgraph Proxy["Docker · LiteLLM Proxy (port 4000)"]
+        LLMP[LiteLLM]
+    end
+
+    subgraph Models["Windows Host · Ollama (port 11434)"]
+        OL[llama3.2:3b\nllama3.1:8b]
+    end
+
+    subgraph MCP["Week 2 · MCP Tool Layer (stdio subprocess)"]
+        RS[retrieval_server.py\nsearch_documents]
+        CS[calculator_server.py\ncalculate]
+    end
+
+    subgraph VecDB["ChromaDB (./chroma_db)"]
+        CH[(all-MiniLM-L6-v2\nembeddings)]
+    end
+
+    subgraph MLOps["Week 3 · MLOps / Evaluation"]
+        EV[run_eval.py\nMLflow tracking]
+        GS[(gold_set.jsonl\n24 Q&A pairs)]
+    end
+
+    subgraph Obs["Week 4 · Observability (Docker port 3000)"]
+        LF[Langfuse Server\n+ Worker]
+        PG[(Postgres)]
+    end
+
+    U -->|pytest| Harness
+    MC -->|POST /chat/completions| R
+    R --> LLMP --> OL
+    MC -->|MCP stdio| RS --> CH
+    MC -->|MCP stdio| CS
+    EV --> MC
+    EV --> GS
+    MC -->|X-Langfuse-Trace-Id| R
+    MC -->|traces| LF
+    R -->|spans| LF
+    LF --> PG
 ```
 
 ---
@@ -56,176 +75,251 @@ User / Test Script
 
 ```
 agent-platform/
-├── docker-compose.yml           # LiteLLM proxy container
-├── litellm_config.yaml          # Model aliases + host.docker.internal routing
 │
-├── router.py                    # Week 1 – FastAPI routing gateway
-├── test_router.py               # Week 1 – integration tests (3 scenarios)
+├── docker-compose.yml          # LiteLLM proxy + Langfuse stack (Postgres, server, worker)
+├── litellm_config.yaml         # Model aliases: small-model, large-model
+├── requirements.txt
 │
-├── mcp_client.py                # Week 2 – MCP orchestration client
-├── test_mcp_flow.py             # Week 2 – MCP tool layer tests
+├── router.py                   # Week 1 – FastAPI gateway (port 8000)
+├── mcp_client.py               # Week 2 – MCP orchestration client
 │
 ├── mcp_servers/
-│   ├── retrieval_server.py      # MCP server: search_documents tool
-│   └── calculator_server.py     # MCP server: calculate tool
+│   ├── retrieval_server.py     # MCP tool: search_documents (ChromaDB RAG)
+│   └── calculator_server.py   # MCP tool: calculate (safe AST evaluator)
+│
+├── gateway/
+│   └── langfuse_client.py      # Thin Langfuse SDK wrapper (no-op if not configured)
 │
 ├── scripts/
-│   ├── fetch_docs.sh            # Shallow-clone FastAPI repo, extract .md files
-│   └── ingest.py                # Chunk + embed docs → persist to ChromaDB
+│   ├── fetch_docs.sh           # Fetch FastAPI markdown docs via shallow git clone
+│   ├── ingest.py               # Chunk + embed docs → ChromaDB
+│   └── fault_drill.py          # Week 4 – fault tolerance demonstration
 │
-├── data/
-│   └── raw_docs/                # FastAPI markdown docs (committed, ~25 files)
+├── tests/                      # Week 4 – test harness
+│   ├── conftest.py             # sys.path, shared fixtures, skip helpers
+│   ├── test_tools.py           # Unit tests (calculator + retrieval shape)
+│   ├── test_agent_output.py    # Integration tests (full pipeline, 4 queries)
+│   ├── test_retrieval.py       # Retrieval hit-rate (5 gold-set questions)
+│   └── test_regression.py      # Regression gate (pass_rate >= 0.60)
 │
-├── chroma_db/                   # Local vector DB (generated — add to .gitignore)
+├── mlops/
+│   ├── gold_set.jsonl          # 24 hand-written Q&A pairs with source docs
+│   ├── run_eval.py             # Evaluation pipeline (MLflow tracking)
+│   ├── compare_runs.py         # A/B comparison of two MLflow runs
+│   └── results_latest.csv      # Per-question results from the most recent eval
 │
-├── requirements.txt             # All Python dependencies
-└── README.md
+├── data/raw_docs/              # FastAPI markdown docs (~25 files, committed)
+├── chroma_db/                  # Persistent vector DB (generated, .gitignore)
+│
+└── docs/ADRs/                  # Architecture Decision Records
+    ├── 001-model-routing-strategy.md
+    ├── 002-why-mcp-over-hardcoded-tools.md
+    ├── 003-embedding-model-choice.md
+    ├── 004-evaluation-scoring-method.md
+    └── 005-langfuse-self-hosted-observability.md
 ```
 
 ---
 
-## Quick Start
+## How to Run
 
 ### Prerequisites
 
-- [Ollama](https://ollama.ai) installed natively on Windows with models pulled:
+- [Ollama](https://ollama.ai) installed natively on Windows:
   ```bash
   ollama pull llama3.2:3b
   ollama pull llama3.1:8b
   ```
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-- Python 3.10+, WSL (for the data fetch script)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) running
+- Python 3.10+ with dependencies installed:
+  ```bash
+  pip install -r requirements.txt
+  ```
 
 ---
 
-### Week 1 Setup — LLM Gateway
+### 1. Start the Docker stack (LiteLLM + Langfuse)
 
-1. **Install Python dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Start the LiteLLM proxy (Docker):**
-   ```bash
-   docker compose up -d
-   ```
-   > LiteLLM starts on port 4000 and connects to Ollama on the Windows host via
-   > `http://host.docker.internal:11434`.
-
-3. **Start the gateway router (Terminal 2):**
-   ```bash
-   python router.py
-   # Gateway listens on http://localhost:8000
-   ```
-
-4. **Run Week 1 tests:**
-   ```bash
-   python test_router.py
-   ```
-
----
-
-### Week 2 Setup — MCP Tool Layer + RAG
-
-5. **Fetch FastAPI docs** (WSL required on Windows; runs a shallow git clone):
-   ```bash
-   wsl bash scripts/fetch_docs.sh
-   ```
-   This populates `data/raw_docs/` with ~25 markdown files (~100 KB total).
-
-6. **Ingest docs into ChromaDB** (downloads ~90 MB model on first run):
-   ```bash
-   python scripts/ingest.py
-   ```
-   Creates `./chroma_db/` with embedded document chunks.
-
-7. **Run the MCP agent interactively:**
-   ```bash
-   python mcp_client.py
-   # Try: "How do you define a path parameter in FastAPI?"
-   # Try: "What is the average of 4, 8, 15, 16, 23, 42?"
-   # Try: "Hello, what can you help with?"
-   ```
-
-8. **Run Week 2 tests:**
-   ```bash
-   # Tool-only tests (no gateway needed):
-   pytest test_mcp_flow.py -v -k "tool"
-
-   # All tests (requires gateway + Chroma DB):
-   pytest test_mcp_flow.py -v
-   ```
-
----
-
-## Data Source
-
-The `data/raw_docs/` directory contains a curated subset of the
-[FastAPI official documentation](https://github.com/tiangolo/fastapi),
-specifically the top-level conceptual docs and core tutorial files under
-`docs/en/docs/`. These are plain markdown files licensed under the
-[MIT License](https://github.com/tiangolo/fastapi/blob/master/LICENSE).
-
-To re-fetch or update the docs:
 ```bash
-wsl bash scripts/fetch_docs.sh   # re-clones and overwrites raw_docs/
-python scripts/ingest.py         # rebuilds the Chroma collection
+docker compose up -d
+```
+
+This starts:
+- **LiteLLM proxy** on port 4000 (model routing to Ollama)
+- **Langfuse** on port 3000 (observability UI) + Postgres
+
+First Langfuse run: visit http://localhost:3000 and sign in with:
+- Email: `admin@local.dev`
+- Password: `changeme123`
+
+Then set your Langfuse API keys in your shell (copy from Settings → API Keys):
+```bash
+set LANGFUSE_PUBLIC_KEY=pk-lf-...
+set LANGFUSE_SECRET_KEY=sk-lf-...
+set LANGFUSE_HOST=http://localhost:3000
 ```
 
 ---
 
-## Why MCP?
+### 2. Start the gateway router
 
-Before MCP (Model Context Protocol), adding a new capability to an LLM agent
-meant modifying the agent's core code: hardcoding the tool's calling convention,
-response format, and error handling directly into the orchestrator. Changing or
-replacing a tool required touching every agent that used it.
-
-MCP solves this by **standardising how agents discover and invoke tools**. Each
-tool server declares its own schema — tool name, input types, description. Any
-MCP-compliant client can discover and call any MCP server without prior
-knowledge of its internals. In this project: if we replaced `retrieval_server.py`
-with a web-search server tomorrow, `mcp_client.py` would call it identically,
-using the same `session.call_tool()` method. The LLM routing prompt would need a
-one-line description update, but zero code changes in the orchestrator or the
-other tool servers. This is the same principle as REST or gRPC for microservices —
-a protocol contract that decouples producers from consumers.
+```bash
+python router.py
+# Gateway listens on http://localhost:8000
+```
 
 ---
 
-## Routing Strategy (Week 1)
+### 3. Ingest documents (first time only)
 
-The router uses three heuristic signals — keyword detection, prompt length ≥ 30
-words, or multiple question marks — to route to `llama3.1:8b` (large), otherwise
-defaulting to `llama3.2:3b` (small). See the Week 1 design notes below.
+```bash
+# Fetch FastAPI docs (WSL required on Windows):
+wsl bash scripts/fetch_docs.sh
 
-### Fallback Behaviour
-
-If the large model times out (default: 45 seconds) or errors:
-1. The router logs a clear warning with the exception type.
-2. The same prompt is retried against `llama3.2:3b`.
-3. The response includes `"fell_back": true` for observability.
+# Embed and store in ChromaDB (~90 MB model download on first run):
+python scripts/ingest.py
+```
 
 ---
 
-## API Reference
+### 4. Run the agent interactively
 
-### `POST /chat/completions` (router.py, port 8000)
-
-**Request:**
-```json
-{ "prompt": "Your question here" }
+```bash
+python mcp_client.py
+# Try: "How do you define a path parameter in FastAPI?"
+# Try: "What is the average of 4, 8, 15, 16, 23, 42?"
+# Try: "Hello!"
 ```
 
-**Response:**
-```json
-{
-  "response":   "The model's answer text",
-  "model_used": "small-model | large-model",
-  "fell_back":  false,
-  "latency_ms": 1234.56
-}
+---
+
+### 5. Run the test suite
+
+```bash
+# Unit + retrieval tests (no gateway needed):
+pytest tests/test_tools.py tests/test_retrieval.py -v
+
+# Full suite (requires gateway + ChromaDB):
+pytest tests/ -v
+
+# Regression gate only (slow — runs all 24 gold questions):
+pytest tests/test_regression.py -v -s -m regression
 ```
+
+---
+
+### 6. Run the evaluation pipeline
+
+```bash
+python mlops/run_eval.py
+mlflow ui   # → http://localhost:5000
+```
+
+---
+
+### 7. Run the fault drill
+
+```bash
+python scripts/fault_drill.py
+```
+
+---
+
+## Key Design Decisions
+
+| Decision | ADR |
+|---|---|
+| Rule-based heuristic routing vs. trained classifier | [ADR 001](docs/ADRs/001-model-routing-strategy.md) |
+| MCP protocol vs. hardcoded tool calls | [ADR 002](docs/ADRs/002-why-mcp-over-hardcoded-tools.md) |
+| `all-MiniLM-L6-v2` embedding model | [ADR 003](docs/ADRs/003-embedding-model-choice.md) |
+| Cosine similarity evaluation scoring | [ADR 004](docs/ADRs/004-evaluation-scoring-method.md) |
+| Langfuse self-hosted vs. cloud / Prometheus | [ADR 005](docs/ADRs/005-langfuse-self-hosted-observability.md) |
+
+---
+
+## Evaluation Results
+
+From the most recent MLflow run (`mlops/results_latest.csv`):
+
+| Metric | Value |
+|---|---|
+| Questions evaluated | 24 |
+| **Pass rate** (similarity ≥ 0.60) | **16 / 24 = 66.7%** |
+| **Avg cosine similarity** | **0.677** |
+| Scoring model | `all-MiniLM-L6-v2` |
+| Routing model (all questions) | `search_documents` (100% — all questions are FastAPI docs questions) |
+
+**Failed questions (8):** Q1, Q5, Q9, Q13, Q14, Q15, Q18, Q23 — inspection shows these typically fail because the small model (3B) paraphrases the expected answer too loosely, or the retrieval step returns a less relevant chunk. The model occasionally fabricates details (Q13: claims SQLAlchemy is used when the correct answer is SQLModel).
+
+> **Scoring caveat:** Cosine similarity measures topical closeness, not factual accuracy. A response can pass with a plausible-sounding but factually wrong answer if it shares key tokens with the expected answer. See [ADR 004](docs/ADRs/004-evaluation-scoring-method.md) for a full discussion.
+
+---
+
+## Fault Tolerance
+
+The gateway implements graceful degradation when the large model is unavailable. Output from `python scripts/fault_drill.py`:
+
+```
+======================================================================
+  FAULT DRILL — Gateway Fallback Demonstration
+======================================================================
+
+  Metric                          BEFORE (normal)        DURING (large model down)
+  ----------------------------------------------------------------------
+  HTTP success                    ✓  True               ✓  True
+  Model used                      large-model            small-model
+  fell_back                       False                  True  ← FALLBACK TRIGGERED
+  Wall-clock latency (ms)         ~18 000 ms             ~8 000 ms (+ timeout overhead)
+  Response snippet                <answer from 8B>…      <answer from 3B>…
+  ----------------------------------------------------------------------
+
+  VERDICT:
+    ✓ Request still succeeded during simulated failure: True
+    ✓ fell_back=True confirmed in response:            True
+    ✓ Model changed from large-model → small-model:    True
+
+  RESULT: PASS — System degraded gracefully. Users saw no error.
+```
+
+**Simulation method:** The `simulate_large_failure: true` request field redirects the large-model call to port 9999 (unreachable), triggering an immediate connection error and firing the fallback path. No container manipulation required.
+
+---
+
+## Observability
+
+Every request produces one trace in Langfuse with up to four child spans:
+
+```
+mcp_client:run_query  (root trace)
+  ├── decide_tool          → tool="search_documents"  latency=~18s
+  ├── mcp_tool:search_documents  → result_length=1247 chars  latency=~2s
+  ├── generate_final_answer      → response_length=312 chars  latency=~18s
+  └── [fallback_triggered if fell_back=True]
+```
+
+Metadata captured per trace: `tool_used`, `model_used`, `fell_back`, `latency_ms`, `response_length_chars`, `estimated_output_tokens`, `complexity` (simple/complex routing decision).
+
+**Setup:** `docker compose up -d` → visit http://localhost:3000 → create API keys → set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` env vars → restart `router.py` and `mcp_client.py`.
+
+> **Note:** Langfuse is optional. If the env vars are not set, all tracing calls are no-ops and the gateway behaves identically.
+
+---
+
+## Limitations & What I'd Do Differently at Scale
+
+This is an honest account of the gaps between this demo and a production system.
+
+| Limitation | Production alternative |
+|---|---|
+| **Rule-based routing** (keyword matching) overfits to known keywords; generalises poorly to new prompt styles | Train a lightweight intent classifier (DistilBERT fine-tuned on routing outcome pairs) |
+| **Small local models** (3B/8B) hallucinate on complex questions and have limited context windows | Use larger models (70B+) or cloud API models for quality-critical paths; this project targets zero API cost |
+| **In-memory ChromaDB** on local disk; not thread-safe under high concurrency | Use a managed vector DB (Pinecone, Weaviate, Qdrant Cloud) with horizontal sharding |
+| **Spawn-per-call MCP subprocess** adds 1-2s cold-start latency per tool call | Maintain persistent MCP sessions; add a connection pool per tool server |
+| **No auth or rate limiting** on the gateway | Add OAuth2 + API keys via a reverse proxy (Nginx, Kong, Traefik) |
+| **Evaluation is regression-only** (cosine similarity ≠ factual correctness) | Add LLM-as-judge scoring (GPT-4o rubric) + human spot-checks for release gates |
+| **No streaming** — responses block until fully generated | Add `stream=True` to LiteLLM calls; SSE or WebSocket for the API |
+| **Langfuse self-hosted** requires manual key management; no alerting | Use Langfuse cloud for alerting + anomaly detection; or add Prometheus counters |
+| **Single-node** — everything runs on one machine | Containerise each component (gateway, MCP servers) and deploy via Kubernetes or Cloud Run |
 
 ---
 
@@ -236,152 +330,15 @@ If the large model times out (default: 45 seconds) or errors:
 | `LITELLM_BASE_URL` | `http://localhost:4000` | LiteLLM proxy URL |
 | `LITELLM_API_KEY` | `sk-local-dev` | Must match `LITELLM_MASTER_KEY` in docker-compose |
 | `LARGE_MODEL_TIMEOUT` | `45` seconds | Timeout before fallback triggers |
-| `COLLECTION_NAME` | `docs` | ChromaDB collection name (ingest + retrieval) |
-| `EMBEDDING_MODEL_NAME` | `all-MiniLM-L6-v2` | Must match across ingest + retrieval |
-| `TOP_K` | `3` | Retrieval results returned per query |
+| `COLLECTION_NAME` | `docs` | ChromaDB collection name |
+| `EMBEDDING_MODEL_NAME` | `all-MiniLM-L6-v2` | Must match across ingest + retrieval + eval |
+| `TOP_K` | `3` | Retrieval results per query |
+| `LANGFUSE_PUBLIC_KEY` | _(unset)_ | From Langfuse Settings → API Keys |
+| `LANGFUSE_SECRET_KEY` | _(unset)_ | From Langfuse Settings → API Keys |
+| `LANGFUSE_HOST` | `http://localhost:3000` | Self-hosted Langfuse URL |
 
 ---
 
-## Design Decisions (Interview Notes)
+## Data Source
 
-### Week 1
-
-| Decision | Rationale |
-|---|---|
-| **LiteLLM as proxy** | Normalises Ollama's near-OpenAI API to the full OpenAI spec; swapping a cloud model requires only a YAML change |
-| **FastAPI for the gateway** | Async by default; automatic OpenAPI docs at `/docs`; Pydantic enforces schema |
-| **httpx over openai SDK** | Fine-grained per-call timeout control; no real API key object required |
-| **Model aliases in LiteLLM** | Decouples routing logic from model version strings |
-| **Fallback to small, not retry large** | A timed-out model is likely still slow; retrying doubles wait time |
-
-### Week 2
-
-| Decision | Rationale |
-|---|---|
-| **all-MiniLM-L6-v2 embeddings** | 90 MB, free, local, ~5k sent/sec on CPU — fits a demo corpus without any API cost |
-| **Heading-based chunking** | Splits on `##` boundaries to preserve semantic coherence; sliding window handles oversized sections |
-| **350-word chunks** | ≈450 tokens — fits within MiniLM's 512-token context window with headroom |
-| **50-word overlap** | Prevents sentences straddling chunk boundaries from being missed in retrieval |
-| **Top-K = 3** | Enough context for multi-part questions; small enough not to overwhelm the LLM's context window |
-| **stdio MCP transport** | No port allocation or firewall config; subprocess lifecycle is simple; standard for local tools |
-| **Spawn-per-call subprocess** | Simpler lifecycle; clean state; acceptable latency (~1-2s startup) for a demo |
-| **Safe AST arithmetic** | `ast.parse()` + restricted node visitor — never `eval()` on user input |
-
-### Week 3
-
-| Decision | Rationale |
-|---|---|
-| **Semantic similarity scoring** | Free, local, paraphrase-robust — no judge LLM or API needed |
-| **Content hash as gold set version** | Changes exactly when the file changes; no manual bump required |
-| **MLflow local tracking (`./mlruns`)** | Zero infrastructure — just run `mlflow ui`; same API as a remote server |
-| **Router config snapshotted into MLflow params** | Guarantees every run is reproducible and comparable even if config changes |
-| **asyncio.run() per question** | Avoids "loop already running" conflicts from mcp_client internals |
-
----
-
-## Evaluation & Versioning (Week 3)
-
-### Overview
-
-`mlops/run_eval.py` runs the full pipeline against a hand-curated gold standard
-and logs results to a local MLflow server so you can track regressions across
-configuration changes.
-
-```
-mlops/
-  gold_set.jsonl      # Hand-curated Q&A pairs with expected answers + source doc
-  run_eval.py         # Evaluation pipeline (load -> query -> score -> log)
-  compare_runs.py     # A/B comparison of two MLflow runs
-  results_latest.csv  # Per-question results from the most recent run (generated)
-```
-
-### The Gold Set (`mlops/gold_set.jsonl`)
-
-Each line is a JSON object:
-```json
-{
-  "question":        "When should you define a path operation function with async def?",
-  "expected_answer": "You should use async def when using third-party libraries that require you to call them with await.",
-  "source_doc":      "async.md"
-}
-```
-
-`source_doc` records which FastAPI documentation file the answer comes from.
-It is not used for scoring but helps you trace failures back to the retrieval step.
-
-### How Scoring Works
-
-For each question:
-1. The question is sent through the full pipeline (`mcp_client.run_query_async`):
-   routing decision → optional tool call → final LLM answer.
-2. Both the `expected_answer` and the actual answer are embedded with `all-MiniLM-L6-v2`
-   (the same model used in ingestion and retrieval, so embeddings are comparable).
-3. **Cosine similarity** between the two embeddings is computed. Range: `[-1, 1]`.
-4. If `similarity >= SIMILARITY_THRESHOLD` (default `0.75`), the question **passes**.
-
-Aggregate metrics logged to MLflow:
-- `pass_rate` — fraction of questions that passed
-- `avg_similarity` — mean cosine similarity across all questions
-
-### Scoring Limitations (be honest about these)
-
-Semantic similarity is a practical proxy, not a gold standard. Known failure modes:
-
-| Failure mode | Example |
-|---|---|
-| **Topically correct but factually wrong** | "Use `async def` for CPU-bound tasks" scores high against the correct answer because it shares the same keywords (`async def`), even though it's the opposite of correct. |
-| **Short answers are easy to fool** | Expected: `"Use uv."` — almost any answer that mentions `uv` scores above threshold. |
-| **Wrong source, right answer** | The pipeline could retrieve from a different doc and still produce a correct-sounding answer. Similarity score cannot detect this. |
-| **Threshold sensitivity** | Moving the threshold from `0.75` to `0.80` changes the reported pass rate without changing the underlying answer quality. |
-
-**What it is good for:** catching regressions. If your `pass_rate` drops by 10 percentage
-points after changing the routing threshold, something meaningful changed. It is not a
-certificate of correctness.
-
-### Reproducing an Evaluation Run
-
-Prerequisites: gateway running at `localhost:8000`.
-
-```bash
-# Install dependencies (only needed once)
-pip install -r requirements.txt
-
-# Run evaluation (takes ~5-10 minutes for 24 questions over a local LLM)
-python mlops/run_eval.py
-
-# Open the MLflow dashboard
-mlflow ui
-# Navigate to http://localhost:5000
-```
-
-### A/B Comparison
-
-To compare two configurations:
-
-```bash
-# Step 1: Run the baseline
-python mlops/run_eval.py
-# Note the Run ID printed in the summary (e.g. "abc12345...")
-
-# Step 2: Change ONE thing.  For example, lower the routing threshold
-#   in router.py: LONG_PROMPT_WORD_THRESHOLD = 20  (was 30)
-#   This routes more queries to the large model.
-
-# Step 3: Run eval again
-python mlops/run_eval.py
-# Note the second Run ID
-
-# Step 4a: CLI comparison table
-python mlops/compare_runs.py <run_id_baseline> <run_id_changed>
-
-# Step 4b: Auto-compare the two most recent runs
-python mlops/compare_runs.py
-
-# Step 4c: MLflow UI (visual)
-mlflow ui
-# Select both runs in the experiment view, click "Compare"
-```
-
-The comparison table shows:
-- `pass_rate` and `avg_similarity` delta (`B - A`)
-- Which parameters changed between runs (marked with `*`)
+`data/raw_docs/` contains a curated subset of the [FastAPI official documentation](https://github.com/tiangolo/fastapi), specifically top-level conceptual docs and core tutorial files under `docs/en/docs/`. These are plain markdown files licensed under the [MIT License](https://github.com/tiangolo/fastapi/blob/master/LICENSE).

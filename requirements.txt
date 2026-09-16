@@ -1,4 +1,4 @@
-# Python dependencies for the Local LLM Gateway + MCP Tool Layer
+# Python dependencies for the Local LLM Agent Platform
 # Install with: pip install -r requirements.txt
 #
 # Week 1 – Gateway
@@ -6,7 +6,7 @@ fastapi>=0.111.0           # ASGI web framework – async endpoint support
 uvicorn[standard]>=0.29.0  # ASGI server – runs the FastAPI app
 httpx>=0.27.0              # Async HTTP client – used to call LiteLLM
 pydantic>=2.0.0            # Data validation for request/response schemas
-requests>=2.31.0           # Sync HTTP – used in test_router.py and mcp_client.py
+requests>=2.31.0           # Sync HTTP – used in mcp_client.py and tests
 litellm[proxy]>=1.40.0     # Local LLM proxy (native execution option without Docker)
 
 # Week 2 – MCP Tool Layer + RAG
@@ -14,9 +14,11 @@ mcp>=1.0.0                 # Model Context Protocol SDK (server + client)
 chromadb>=0.5.0            # Local vector store – persists embeddings to ./chroma_db/
 sentence-transformers>=3.0.0  # Free local embeddings – all-MiniLM-L6-v2 (no API needed)
 
-# Testing
+# Week 3 – MLOps / Evaluation
+mlflow>=2.14.0             # Experiment tracking and model registry
+
+# Week 4 – Test Harness + Observability
 pytest>=8.0.0              # Test runner
 pytest-asyncio>=0.23.0     # Async test support (mcp_client uses asyncio)
-
-# Observability / Experiment Tracking
-mlflow>=2.14.0             # Experiment tracking and model registry
+pytest-timeout>=2.3.0      # Per-test timeout so hung MCP subprocess doesn't block CI
+langfuse>=2.0.0            # Self-hosted observability SDK (works with Langfuse v2 + v3)

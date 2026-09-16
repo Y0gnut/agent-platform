@@ -19,8 +19,14 @@ import time
 import logging
 import re
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+
+# ── Langfuse observability (optional — degrades gracefully if not configured) ──
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).parent.resolve()))
+from gateway.langfuse_client import flush, get_langfuse, start_trace, timed_span
+_lf = get_langfuse()  # None if LANGFUSE_PUBLIC_KEY not set
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 # Structured logging is critical in a gateway: it gives you an audit trail of
@@ -201,7 +207,7 @@ class ChatResponse(BaseModel):
 
 
 @app.post("/chat/completions", response_model=ChatResponse)
-async def chat_completions(request: ChatRequest) -> ChatResponse:
+async def chat_completions(request: ChatRequest, http_request: Request = None) -> ChatResponse:
     """
     Main routing endpoint.
 
@@ -224,12 +230,27 @@ async def chat_completions(request: ChatRequest) -> ChatResponse:
     fell_back = False
     model_used = SMALL_MODEL  # default; overwritten below
 
+    # ── Langfuse: create or continue trace ────────────────────────────────────
+    # mcp_client passes a trace ID via header so all router spans attach to
+    # the same trace as the outer orchestration call.
+    incoming_trace_id = None
+    if http_request is not None:
+        incoming_trace_id = http_request.headers.get("x-langfuse-trace-id") or None
+    lf_trace = start_trace(
+        _lf,
+        name="router:chat_completions",
+        user_query=request.prompt[:500],
+        trace_id=incoming_trace_id,
+    )
+
     complexity = classify_prompt(request.prompt)
+
+    # Record routing decision as a span
+    with timed_span(lf_trace, "classify_prompt", input_data=request.prompt[:200]) as cls_span:
+        cls_span.update(metadata={"complexity": complexity})
 
     if complexity == "complex":
         # Attempt the large model first.
-        # We set a tight timeout so users aren't left hanging if the 8B
-        # model is slow to warm up or the container is overloaded.
         target_base_url = "http://localhost:9999" if request.simulate_large_failure else LITELLM_BASE_URL
         if request.simulate_large_failure:
             logger.info("Routing to LARGE model (simulating failure via wrong port 9999)")
@@ -237,13 +258,23 @@ async def chat_completions(request: ChatRequest) -> ChatResponse:
             logger.info("Routing to LARGE model (complexity=complex)")
 
         try:
-            reply = await call_litellm(
-                prompt=request.prompt,
-                model=LARGE_MODEL,
-                timeout=LARGE_MODEL_TIMEOUT,
-                base_url=target_base_url,
-            )
-            model_used = LARGE_MODEL
+            with timed_span(lf_trace, "litellm:large_model", input_data=request.prompt[:200]) as span:
+                reply = await call_litellm(
+                    prompt=request.prompt,
+                    model=LARGE_MODEL,
+                    timeout=LARGE_MODEL_TIMEOUT,
+                    base_url=target_base_url,
+                )
+                model_used = LARGE_MODEL
+                span.update(
+                    output=reply[:500],
+                    metadata={
+                        "model": LARGE_MODEL,
+                        "estimated_tokens": len(reply.split()),
+                        "response_length_chars": len(reply),
+                        "simulate_failure": request.simulate_large_failure,
+                    },
+                )
 
         except (httpx.TimeoutException, httpx.HTTPStatusError, Exception) as exc:
             # -- FALLBACK ------------------------------------------------------
@@ -264,16 +295,23 @@ async def chat_completions(request: ChatRequest) -> ChatResponse:
                 exc,
             )
             fell_back = True
+            lf_trace.span(name="fallback_triggered").update(
+                input=str(exc)[:300],
+                metadata={"fallback_reason": type(exc).__name__},
+            )
             try:
-                reply = await call_litellm(
-                    prompt=request.prompt,
-                    model=SMALL_MODEL,
-                    timeout=30,  # Small model gets a more generous timeout
-                                 # because it's the last resort; we'd rather
-                                 # wait a bit longer than return nothing.
-                    base_url=LITELLM_BASE_URL,
-                )
-                model_used = SMALL_MODEL
+                with timed_span(lf_trace, "litellm:small_model_fallback", input_data=request.prompt[:200]) as span:
+                    reply = await call_litellm(
+                        prompt=request.prompt,
+                        model=SMALL_MODEL,
+                        timeout=30,
+                        base_url=LITELLM_BASE_URL,
+                    )
+                    model_used = SMALL_MODEL
+                    span.update(
+                        output=reply[:500],
+                        metadata={"model": SMALL_MODEL, "fell_back": True},
+                    )
             except Exception as fallback_exc:
                 # Both models failed - surface the error rather than silently
                 # swallowing it. A 503 tells the caller to retry later.
@@ -285,17 +323,24 @@ async def chat_completions(request: ChatRequest) -> ChatResponse:
 
     else:
         # Simple prompt -> go directly to small model.
-        # No need to try the large model first; the small model is faster
-        # and the quality difference for simple queries is negligible.
         logger.info("Routing to SMALL model (complexity=simple)")
         try:
-            reply = await call_litellm(
-                prompt=request.prompt,
-                model=SMALL_MODEL,
-                timeout=30,
-                base_url=LITELLM_BASE_URL,
-            )
-            model_used = SMALL_MODEL
+            with timed_span(lf_trace, "litellm:small_model", input_data=request.prompt[:200]) as span:
+                reply = await call_litellm(
+                    prompt=request.prompt,
+                    model=SMALL_MODEL,
+                    timeout=30,
+                    base_url=LITELLM_BASE_URL,
+                )
+                model_used = SMALL_MODEL
+                span.update(
+                    output=reply[:500],
+                    metadata={
+                        "model": SMALL_MODEL,
+                        "estimated_tokens": len(reply.split()),
+                        "response_length_chars": len(reply),
+                    },
+                )
         except Exception as exc:
             logger.error("Small model failed for simple query: %s", exc)
             raise HTTPException(
@@ -310,6 +355,20 @@ async def chat_completions(request: ChatRequest) -> ChatResponse:
         fell_back,
         latency_ms,
     )
+
+    # ── Langfuse: finalise trace ───────────────────────────────────────────────
+    lf_trace.update(
+        output=reply[:500],
+        metadata={
+            "model_used": model_used,
+            "fell_back": fell_back,
+            "complexity": complexity,
+            "latency_ms": round(latency_ms, 1),
+            "response_length_chars": len(reply),
+            "estimated_output_tokens": len(reply.split()),
+        },
+    )
+    flush(_lf)
 
     return ChatResponse(
         response=reply,
