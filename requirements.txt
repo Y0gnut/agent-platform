@@ -1,24 +1,21 @@
-# Python dependencies for the Local LLM Agent Platform
-# Install with: pip install -r requirements.txt
-#
-# Week 1 – Gateway
-fastapi>=0.111.0           # ASGI web framework – async endpoint support
-uvicorn[standard]>=0.29.0  # ASGI server – runs the FastAPI app
-httpx>=0.27.0              # Async HTTP client – used to call LiteLLM
-pydantic>=2.0.0            # Data validation for request/response schemas
-requests>=2.31.0           # Sync HTTP – used in mcp_client.py and tests
-litellm[proxy]>=1.40.0     # Local LLM proxy (native execution option without Docker)
+# Gateway and HTTP Server
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+httpx>=0.27.0
+pydantic>=2.0.0
+requests>=2.31.0
+litellm[proxy]>=1.40.0
 
-# Week 2 – MCP Tool Layer + RAG
-mcp>=1.0.0                 # Model Context Protocol SDK (server + client)
-chromadb>=0.5.0            # Local vector store – persists embeddings to ./chroma_db/
-sentence-transformers>=3.0.0  # Free local embeddings – all-MiniLM-L6-v2 (no API needed)
+# Model Context Protocol and Vector Storage
+mcp>=1.0.0
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
 
-# Week 3 – MLOps / Evaluation
-mlflow>=2.14.0             # Experiment tracking and model registry
+# Evaluation and Tracking
+mlflow>=2.14.0
 
-# Week 4 – Test Harness + Observability
-pytest>=8.0.0              # Test runner
-pytest-asyncio>=0.23.0     # Async test support (mcp_client uses asyncio)
-pytest-timeout>=2.3.0      # Per-test timeout so hung MCP subprocess doesn't block CI
-langfuse>=2.0.0            # Self-hosted observability SDK (works with Langfuse v2 + v3)
+# Testing and Observability
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-timeout>=2.3.0
+langfuse>=2.0.0

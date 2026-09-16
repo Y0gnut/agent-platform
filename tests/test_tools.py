@@ -1,35 +1,14 @@
 """
-tests/test_tools.py — Unit Tests for MCP Tool Handler Functions
-===============================================================
-Tests the calculator and retrieval tool logic DIRECTLY — not through the MCP
-subprocess protocol or the gateway. This keeps tests fast (<2s for calculator,
-~10s for retrieval which must load the embedding model once) and eliminates
-infrastructure dependencies for the pure-logic cases.
-
-What is tested:
-  Calculator:
-    - Basic arithmetic via evaluate_expression()
-    - Function-call style via _parse_function_call() + _apply_function()
-    - Edge cases: division by zero, empty list, negative numbers, floordiv
-    - The calculate() tool function itself (end-to-end within the module)
-
-  Retrieval (requires ChromaDB):
-    - search_documents() returns a non-empty string
-    - Result contains expected formatting markers (--- Result N ---)
-    - Result contains source: metadata
-    - Results are specific to the query (smoke-level check)
-
-Run without gateway or Ollama:
-    pytest tests/test_tools.py -v
+tests/test_tools.py - Unit Tests for MCP Tool Handlers
+======================================================
+Directly validates arithmetic parsing and evaluation in calculator_server,
+as well as document formatting and metadata extraction in retrieval_server.
 """
 
 import math
 import pytest
 
-# ── sys.path is set by conftest.py ─────────────────────────────────────────────
 from tests.conftest import chroma_db_exists
-
-# ── Import calculator internals directly (no MCP subprocess) ──────────────────
 from mcp_servers.calculator_server import (
     _apply_function,
     _parse_function_call,
@@ -38,12 +17,8 @@ from mcp_servers.calculator_server import (
 )
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Calculator — evaluate_expression()
-# ═══════════════════════════════════════════════════════════════════════════════
-
 class TestEvaluateExpression:
-    """Direct tests of the AST-safe arithmetic evaluator."""
+    """Tests for the AST arithmetic evaluator."""
 
     def test_simple_addition(self):
         assert evaluate_expression("4 + 8") == pytest.approx(12.0)
@@ -188,7 +163,7 @@ class TestApplyFunction:
 class TestCalculateTool:
     """
     Tests the calculate() function that the MCP server exposes as a tool.
-    These go through the full in-module dispatch (function-style → arithmetic).
+    These go through the full in-module dispatch (function-style -> arithmetic).
     """
 
     def test_arithmetic_expression(self):

@@ -33,7 +33,7 @@ import re
 import logging
 import pathlib
 
-# ── Logging (to stderr so stdout stays clean) ─────────────────────────────────
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -41,26 +41,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ingest")
 
-# ── Path setup ────────────────────────────────────────────────────────────────
-# Allow running as: python scripts/ingest.py  OR  python ingest.py
 SCRIPT_DIR = pathlib.Path(__file__).parent.resolve()
 REPO_ROOT = SCRIPT_DIR.parent
 RAW_DOCS_DIR = REPO_ROOT / "data" / "raw_docs"
 CHROMA_DIR = str(REPO_ROOT / "chroma_db")
 
-# ── Chunking parameters ───────────────────────────────────────────────────────
-# ~350 words ≈ 450 tokens for MiniLM-L6-v2 (which has a 256-word-piece limit
-# but pools well up to ~512 tokens). Staying at 350 words gives headroom.
+# Chunking configuration:
+# 350 words fits within the 512-token context window of all-MiniLM-L6-v2.
 MAX_WORDS = 350
-# Overlap between consecutive sliding-window chunks.
-# 50 words of overlap ensures that a sentence straddling a chunk boundary
-# appears in at least one chunk in full, improving retrieval recall.
+# 50 words stride ensures sentences spanning chunk boundaries are preserved.
 STRIDE = 50
 
-# ChromaDB collection name — must match retrieval_server.py
 COLLECTION_NAME = "docs"
-
-# Embedding model — must match retrieval_server.py
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 
@@ -122,7 +114,6 @@ def load_documents(docs_dir: pathlib.Path) -> list[dict]:
 
 
 def main() -> None:
-    # ── 1. Validate raw docs exist ─────────────────────────────────────────────
     if not RAW_DOCS_DIR.exists() or not any(RAW_DOCS_DIR.glob("*.md")):
         logger.error(
             "No markdown files found in %s\n"
@@ -131,33 +122,28 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # ── 2. Load embedding model ────────────────────────────────────────────────
-    logger.info("Loading embedding model '%s' (downloads on first run)…", EMBEDDING_MODEL_NAME)
+    logger.info("Loading embedding model '%s'...", EMBEDDING_MODEL_NAME)
     from sentence_transformers import SentenceTransformer
     model = SentenceTransformer(EMBEDDING_MODEL_NAME)
     logger.info("Embedding model loaded.")
 
-    # ── 3. Connect to ChromaDB ─────────────────────────────────────────────────
-    logger.info("Connecting to ChromaDB at '%s'…", CHROMA_DIR)
+    logger.info("Connecting to ChromaDB at '%s'...", CHROMA_DIR)
     import chromadb
     client = chromadb.PersistentClient(path=CHROMA_DIR)
 
-    # Delete existing collection to ensure idempotency.
-    # In production, use upsert with deterministic IDs instead.
+    # Recreate collection to ensure idempotency across ingestion runs
     try:
         client.delete_collection(COLLECTION_NAME)
-        logger.info("Deleted existing '%s' collection (rebuilding).", COLLECTION_NAME)
+        logger.info("Deleted existing '%s' collection.", COLLECTION_NAME)
     except Exception:
-        pass  # Collection didn't exist yet — fine
+        pass
 
     collection = client.create_collection(
         name=COLLECTION_NAME,
-        # ChromaDB's default cosine distance works well for sentence embeddings
         metadata={"hnsw:space": "cosine"},
     )
-    logger.info("Created fresh '%s' collection.", COLLECTION_NAME)
+    logger.info("Created collection '%s'.", COLLECTION_NAME)
 
-    # ── 4. Load + chunk documents ──────────────────────────────────────────────
     raw_docs = load_documents(RAW_DOCS_DIR)
     logger.info("Loaded %d markdown files.", len(raw_docs))
 
@@ -166,28 +152,20 @@ def main() -> None:
         chunks = split_into_sections(doc["text"], doc["source"])
         all_chunks.extend(chunks)
 
-    logger.info("Split into %d chunks total.", len(all_chunks))
+    logger.info("Generated %d chunks.", len(all_chunks))
 
-    # ── 5. Embed and upsert in batches ─────────────────────────────────────────
-    # Batch size 64 balances memory usage vs number of encode() calls.
-    # sentence-transformers handles batching internally but we control it
-    # here so we can log progress on large corpora.
     BATCH_SIZE = 64
     texts = [c["text"] for c in all_chunks]
     sources = [c["source"] for c in all_chunks]
-    # Deterministic IDs: filename + chunk index within the full list
     ids = [f"{sources[i]}::chunk_{i}" for i in range(len(all_chunks))]
 
-    logger.info("Embedding %d chunks (batch_size=%d)…", len(texts), BATCH_SIZE)
-    # sentence-transformers v6 removed convert_to_list; encode() returns a numpy
-    # ndarray which we convert to a plain Python list via .tolist().
+    logger.info("Generating embeddings for %d chunks (batch_size=%d)...", len(texts), BATCH_SIZE)
     embeddings = model.encode(
         texts,
         batch_size=BATCH_SIZE,
         show_progress_bar=True,
     ).tolist()
 
-    # Upsert to ChromaDB in batches
     for batch_start in range(0, len(texts), BATCH_SIZE):
         batch_end = min(batch_start + BATCH_SIZE, len(texts))
         collection.add(

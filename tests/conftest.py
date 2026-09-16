@@ -1,10 +1,7 @@
 """
-tests/conftest.py — shared pytest configuration and fixtures
-============================================================
-Ensures that the repo root is on sys.path before any test module is imported,
-so ``import mcp_client``, ``import mcp_servers.calculator_server``, and
-``from mlops import run_eval`` all work regardless of the working directory
-pytest is invoked from.
+tests/conftest.py - Shared Test Fixtures and Environment Configuration
+======================================================================
+Configures sys.path and common fixtures across unit, integration, and regression suites.
 """
 
 import pathlib
@@ -13,20 +10,14 @@ import sys
 import pytest
 import requests
 
-# ── sys.path setup ─────────────────────────────────────────────────────────────
-# Insert repo root (the directory that contains router.py, mcp_client.py, etc.)
-# as the first entry so our local modules shadow any installed packages.
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.resolve()
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# Also add mlops/ so ``from mlops import run_eval`` style imports work.
 _MLOPS_DIR = _REPO_ROOT / "mlops"
 if str(_MLOPS_DIR) not in sys.path:
     sys.path.insert(0, str(_MLOPS_DIR))
 
-
-# ── Shared constants ───────────────────────────────────────────────────────────
 GATEWAY_URL = "http://localhost:8000/chat/completions"
 CHROMA_DB_PATH = _REPO_ROOT / "chroma_db"
 GOLD_SET_PATH = _REPO_ROOT / "mlops" / "gold_set.jsonl"
@@ -37,10 +28,16 @@ GOLD_SET_PATH = _REPO_ROOT / "mlops" / "gold_set.jsonl"
 def gateway_is_up() -> bool:
     """Return True if the gateway is reachable (used in skipif markers)."""
     try:
+        resp = requests.get("http://localhost:8000/health", timeout=2)
+        if resp.status_code == 200:
+            return True
+    except Exception:
+        pass
+    try:
         resp = requests.post(
             GATEWAY_URL,
             json={"prompt": "ping"},
-            timeout=5,
+            timeout=15,
         )
         return resp.status_code < 500
     except Exception:

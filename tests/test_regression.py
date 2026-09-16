@@ -1,25 +1,8 @@
 """
-tests/test_regression.py — Regression Gate Against the Gold Set
-===============================================================
-Loads mlops/gold_set.jsonl, runs each question through the full mcp_client
-pipeline, scores answers with the same semantic similarity scorer used in
-mlops/run_eval.py, and asserts the overall pass rate is >= REGRESSION_THRESHOLD.
-
-Design decisions:
-  - Imports scoring logic from mlops/run_eval.py (load_gold_set, score_answer,
-    load_embedding_model) rather than duplicating it. This ensures the regression
-    test and the official eval pipeline use identical scoring.
-  - Does NOT rerun MLflow logging (run_eval() is not called). This test is a
-    quality gate, not an experiment tracker.
-  - Threshold is set at 0.60 (10 percentage points below the best known run of
-    66.7%). Adjust REGRESSION_THRESHOLD if you establish a higher baseline.
-
-This is the slowest test module (~5-10 minutes for 24 questions over a local
-LLM). It is marked with @pytest.mark.regression and skipped if the gateway is
-not running.
-
-Run only this test:
-    pytest tests/test_regression.py -v -s -m regression
+tests/test_regression.py - Regression Gate Against Ground Truth Dataset
+=======================================================================
+Evaluates questions from mlops/gold_set.jsonl against the running pipeline,
+scores results using embedding cosine similarity, and asserts overall pass rate >= REGRESSION_THRESHOLD.
 """
 
 import json
@@ -28,32 +11,21 @@ import sys
 
 import pytest
 
-# sys.path is set by conftest.py
 from tests.conftest import GOLD_SET_PATH, gateway_is_up
 
-# ── Regression threshold ───────────────────────────────────────────────────────
-# Best known pass rate (Week 3 run): 16/24 = 66.7% at threshold=0.60.
-# We set the gate 10 points below to absorb run-to-run LLM stochasticity
-# without masking real regressions (e.g., a broken tool would drop this to ~0%).
+# Baseline regression threshold set to 0.60 to account for local stochasticity
+# while detecting structural regressions in routing or retrieval.
 REGRESSION_THRESHOLD = 0.60
 
-# ── Skip condition ─────────────────────────────────────────────────────────────
 pytestmark = [
     pytest.mark.regression,
     pytest.mark.skipif(
         not gateway_is_up(),
-        reason="Gateway not running at localhost:8000 — start with: python router.py",
+        reason="Gateway not running at localhost:8000. Start with: python router.py",
     ),
 ]
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Import eval scoring helpers from mlops/run_eval.py
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# run_eval.py adds _REPO to sys.path itself on import, but conftest already
-# handles that. We just import the public functions we need.
-from run_eval import (  # noqa: E402  (import after sys.path modification)
+from run_eval import (
     load_embedding_model,
     load_gold_set,
     score_answer,

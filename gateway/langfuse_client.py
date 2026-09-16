@@ -17,9 +17,9 @@ Design goals
    flushing; we don't need to await anything.
 
 Configuration (via environment variables):
-    LANGFUSE_PUBLIC_KEY   — from Langfuse UI Settings → API Keys
-    LANGFUSE_SECRET_KEY   — from Langfuse UI Settings → API Keys
-    LANGFUSE_HOST         — default: http://localhost:3000
+    LANGFUSE_PUBLIC_KEY   - from Langfuse UI Settings -> API Keys
+    LANGFUSE_SECRET_KEY   - from Langfuse UI Settings -> API Keys
+    LANGFUSE_HOST         - default: http://localhost:3000
 
 Usage example (mcp_client.py):
     from gateway.langfuse_client import get_langfuse, start_trace
@@ -43,71 +43,65 @@ from typing import Optional
 
 logger = logging.getLogger("langfuse_client")
 
-# ── Lazy singleton & state ────────────────────────────────────────────────────
+# Singleton instance and state
 _langfuse_instance = None
-_langfuse_disabled = False  # set True if SDK import fails or keys are missing
+_langfuse_disabled = False
 _credentials_prompted = False
 
 
-def prompt_langfuse_credentials():
+def prompt_langfuse_credentials() -> None:
     """
-    交互式提示用户输入 Langfuse 凭据并注入到 os.environ。
-    - 使用 input 获取 Public Key
-    - 使用 getpass 获取 Secret Key（避免终端明文显示）
-    - 强制设置 LANGFUSE_HOST 为 http://localhost:3000 并写入 os.environ
-    - 容错机制：用户回车跳过或空值时不报错，平滑进入 no-op 模式
+    Prompt user for Langfuse credentials in interactive terminals and inject into os.environ.
+
+    - Collects public key via standard input.
+    - Collects secret key via getpass to suppress terminal echo.
+    - Sets LANGFUSE_HOST to http://localhost:3000 by default.
+    - Falls back to no-op mode without error if input is empty or non-interactive.
     """
     global _credentials_prompted
     if _credentials_prompted:
         return
     _credentials_prompted = True
 
-    # 1. 强行将 LANGFUSE_HOST 设为 http://localhost:3000 写入 os.environ
     os.environ["LANGFUSE_HOST"] = "http://localhost:3000"
 
-    # 如果是非交互环境（例如 pytest / 管道无 tty），避免阻塞
+    # Bypass interactive prompts in non-interactive environments (e.g., test runners)
     if not (sys.stdin and sys.stdin.isatty()):
         return
 
     print("\n" + "=" * 60)
-    print("【Langfuse V2 可观测性配置 (本地模式)】")
-    print("已设置环境变量 LANGFUSE_HOST = http://localhost:3000")
-    print("提示：直接按回车可跳过输入，网关将以无追踪 (no-op) 模式正常启动")
+    print("Langfuse Observability Configuration (Local Mode)")
+    print("Target Host: http://localhost:3000 (exported to LANGFUSE_HOST)")
+    print("Notice: Press Enter to skip. Gateway will run in no-op mode.")
     print("=" * 60)
 
     try:
-        # 2. 使用 Python 原生 input 获取 Public Key
-        public_key = input("请输入 Langfuse Public Key (pk-lf-...): ").strip()
-
-        # 3. 使用 Python 原生 getpass 获取 Secret Key 避免明文显示
+        public_key = input("Enter Langfuse Public Key (pk-lf-...): ").strip()
         secret_key = ""
         if public_key:
-            secret_key = getpass.getpass("请输入 Langfuse Secret Key (sk-lf-...) [输入不可见]: ").strip()
+            secret_key = getpass.getpass("Enter Langfuse Secret Key (sk-lf-...) [hidden]: ").strip()
     except (EOFError, OSError):
         public_key = ""
         secret_key = ""
 
-    # 4. 注入环境变量与容错判断
     if public_key and secret_key:
         os.environ["LANGFUSE_PUBLIC_KEY"] = public_key
         os.environ["LANGFUSE_SECRET_KEY"] = secret_key
-        print(" Langfuse 凭证已成功注入环境变量 (os.environ)，开始初始化客户端...\n")
+        print("Langfuse credentials injected into environment. Initializing client...\n")
     else:
-        # 如果跳过或未输全，清理可能残留的空值
         os.environ.pop("LANGFUSE_PUBLIC_KEY", None)
         os.environ.pop("LANGFUSE_SECRET_KEY", None)
-        print("⏭️  已跳过 Langfuse 凭证输入，网关将保持 no-op 模式平滑启动。\n")
+        print("Langfuse credentials not supplied. Running in no-op mode.\n")
 
 
 def get_langfuse():
     """
-    Return a Langfuse client instance (singleton).
+    Return the singleton Langfuse client instance.
 
     Returns None if:
-      - langfuse package is not installed
-      - LANGFUSE_PUBLIC_KEY env var is not set / skipped
-    In either case, all subsequent calls are no-ops — the gateway continues
-    working without observability.
+      - langfuse package is not installed.
+      - LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY is omitted.
+    In either case, all operations default to no-op stubs.
     """
     global _langfuse_instance, _langfuse_disabled
 
@@ -116,7 +110,6 @@ def get_langfuse():
     if _langfuse_instance is not None:
         return _langfuse_instance
 
-    # 触发交互式提示并将凭证注入 os.environ
     prompt_langfuse_credentials()
 
     public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
@@ -124,9 +117,7 @@ def get_langfuse():
     host = os.getenv("LANGFUSE_HOST", "http://localhost:3000").strip()
 
     if not public_key or not secret_key:
-        logger.info(
-            "Langfuse 未启用: 未检测到有效密钥，系统已平滑切换为 no-op 模式，主业务正常运行。"
-        )
+        logger.info("Langfuse not configured; running in no-op mode.")
         _langfuse_disabled = True
         return None
 

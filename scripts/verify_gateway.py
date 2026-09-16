@@ -1,16 +1,11 @@
 """
-test_router.py - Integration tests for the Local LLM Gateway
-=============================================================
-These tests send real HTTP requests to the running router (localhost:8000).
+scripts/verify_gateway.py - Manual Gateway Smoke Test Script
+============================================================
+Sends test HTTP requests to the running gateway (http://localhost:8000)
+to verify simple routing, complex routing, and failover behavior.
 
-They demonstrate three scenarios:
-  1. A simple prompt  -> should route to the SMALL model (llama3.2:3b).
-  2. A complex prompt -> should route to the LARGE model (llama3.1:8b).
-  3. A forced fallback -> simulates large model failure (e.g. wrong port)
-     and verifies automatic fallback to the small model.
-
-Run with:
-    python test_router.py
+Usage:
+    python scripts/verify_gateway.py
 """
 
 import sys

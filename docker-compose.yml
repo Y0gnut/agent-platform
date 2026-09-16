@@ -1,28 +1,10 @@
-# docker-compose.yml
-# Services for the Local LLM Agent Platform.
-#
-# Architecture:
-#   - Ollama runs natively on the Windows host on port 11434 (using local GPU/CPU & models).
-#   - LiteLLM proxy runs in Docker on port 4000; connects to host Ollama via host.docker.internal.
-#   - The FastAPI router on the host connects to LiteLLM at http://localhost:4000.
-#   - Langfuse v2 self-hosted runs on port 3000, backed by Postgres on port 5432.
-#
-# Why langfuse:2.93.3?
-#   - langfuse/langfuse:2 on Docker Hub currently resolves to v3 code which requires
-#     ClickHouse + S3/MinIO, making it heavy for local dev.
-#   - 2.93.3 is the last true v2 release: single container, Postgres only, no worker.
-#
-# Quick start:
-#   docker compose up -d
-#   # Visit http://localhost:3000 and create an account
-#   # Go to Settings → API Keys, create a key pair
-#   # Copy keys into your shell:
-#   #   set LANGFUSE_PUBLIC_KEY=pk-lf-...
-#   #   set LANGFUSE_SECRET_KEY=sk-lf-...
-#   #   set LANGFUSE_HOST=http://localhost:3000
+# Docker Compose services for local development infrastructure
+# Services:
+#   - litellm: Proxy routing requests to local Ollama runtime
+#   - db: PostgreSQL storage for Langfuse
+#   - langfuse-server: Langfuse v2 observability service
 
 services:
-  # ── LiteLLM Proxy ───────────────────────────────────────────────────────────
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
     container_name: litellm
@@ -35,37 +17,24 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     environment:
-      LITELLM_MASTER_KEY: "sk-local-dev"
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-local-dev}"
 
-  # ── Langfuse PostgreSQL Database ─────────────────────────────────────────────
-  # Langfuse v2 only needs Postgres (no ClickHouse, no Redis, no S3).
   db:
     image: postgres:16-alpine
     container_name: langfuse_db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: langfuse
-      POSTGRES_PASSWORD: langfuse_secret
-      POSTGRES_DB: langfuse
+      POSTGRES_USER: ${POSTGRES_USER:-langfuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-langfuse_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-langfuse}
     volumes:
       - langfuse_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-langfuse}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # ── Langfuse v2 Web Server ────────────────────────────────────────────────────
-  # Self-hosted Langfuse v2 OSS (free, Postgres only, single container).
-  # v2.93.3 is the last true v2 release before the v3 rewrite that added
-  # ClickHouse/S3 requirements.
-  #
-  # First start: visit http://localhost:3000 → Create account → Settings → API Keys
-  # Then export:
-  #   set LANGFUSE_PUBLIC_KEY=pk-lf-...
-  #   set LANGFUSE_SECRET_KEY=sk-lf-...
-  #   set LANGFUSE_HOST=http://localhost:3000
-  # And restart router.py + mcp_client.py to enable tracing.
   langfuse-server:
     image: langfuse/langfuse:2.93.3
     container_name: langfuse_server
@@ -76,14 +45,12 @@ services:
       - "3000:3000"
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://langfuse:langfuse_secret@db:5432/langfuse
+      DATABASE_URL: postgresql://${POSTGRES_USER:-langfuse}:${POSTGRES_PASSWORD:-langfuse_secret}@db:5432/${POSTGRES_DB:-langfuse}
       NEXTAUTH_URL: http://localhost:3000
-      NEXTAUTH_SECRET: "7d0d5d8e6d8fded60f131058fb7259efb9919d72edadfcee3505560ae3c103fc"
-      SALT: "292f7bf54f5ed07907ec01bf2614076ef7ac91565f3f1908ba123e681e9cd376"
-      ENCRYPTION_KEY: "562409a05d7ab250a679ffd4bd904a614ba61a44423926d327f95192a1bba9ea"
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-7d0d5d8e6d8fded60f131058fb7259efb9919d72edadfcee3505560ae3c103fc}"
+      SALT: "${SALT:-292f7bf54f5ed07907ec01bf2614076ef7ac91565f3f1908ba123e681e9cd376}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-562409a05d7ab250a679ffd4bd904a614ba61a44423926d327f95192a1bba9ea}"
       TELEMETRY_ENABLED: "false"
 
 volumes:
   langfuse_postgres_data:
-    # Named volume — persists Langfuse data across container restarts.
-    # To wipe and start fresh: docker compose down --volumes

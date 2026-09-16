@@ -1,84 +1,45 @@
 """
-mcp_client.py — MCP Orchestration Client
-=========================================
-Wires the two MCP tool servers (retrieval + calculator) into the Week 1
-LLM gateway to create an agent that can:
-  1. Decide whether a user query needs a tool (search_documents / calculate)
-  2. Call that tool via the MCP protocol
-  3. Use the tool result as context for a final LLM answer
-  4. Answer directly if no tool is needed
-
-Architecture
-------------
-User query
-    │
-    ▼ decide_tool()  ─── POST /chat/completions ──► Week 1 gateway (port 8000)
-    │                         (routing + LLM call)
-    │  {"tool": "search_documents", "args": {...}}
-    │     or
-    │  {"tool": "calculate", "args": {...}}
-    │     or
-    │  {"tool": "none"}
-    │
-    ▼ call_mcp_tool()  ─── MCP stdio protocol ──► retrieval_server.py
-    │                                          ──► calculator_server.py
-    │  tool result (string)
-    │
-    ▼ generate_final_answer()  ─── POST /chat/completions ──► gateway
-    │
-    ▼ return {response, tool_used, tool_result, latency_ms}
-
-MCP transport: stdio (subprocess)
-  Each tool server is spawned as a child process when a tool call is needed.
-  The client communicates via stdin/stdout using JSON-RPC 2.0.
-  Why subprocess instead of HTTP? Stdio is the standard MCP transport for
-  local tools — no port allocation, no firewall rules, no authentication.
-  The protocol handles framing and schema negotiation automatically.
-
-Run interactively:
-    python mcp_client.py
-
-Or import decide_tool() and call_mcp_tool() from tests:
-    from mcp_client import decide_tool, run_query_async
+mcp_client.py - Model Context Protocol (MCP) Orchestration Client
+==================================================================
+Orchestrates tool selection and execution for the agent platform:
+1. Dispatches user query to the gateway to classify tool requirement.
+2. Invokes external tool servers (calculator or retrieval) via MCP stdio.
+3. Synthesizes tool output with the original query to generate grounded answers.
+4. Directly generates responses when no tool invocation is required.
 """
 
 import asyncio
 import json
 import logging
+import pathlib
 import re
 import sys
 import time
-import pathlib
 
-import requests  # sync — used for the gateway calls (simpler than httpx here)
+import requests
 
-# ── Langfuse observability (optional — no-op if not configured) ─────────────────
 from gateway.langfuse_client import flush, get_langfuse, start_trace, timed_span
-_lf = get_langfuse()  # None if LANGFUSE_PUBLIC_KEY/SECRET_KEY not set
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+_lf = get_langfuse()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] mcp_client | %(message)s",
 )
 logger = logging.getLogger("mcp_client")
 
-# ── Configuration ─────────────────────────────────────────────────────────────
 GATEWAY_URL = "http://localhost:8000/chat/completions"
-GATEWAY_API_KEY = "sk-local-dev"  # matches LiteLLM master key
+GATEWAY_API_KEY = "sk-local-dev"
 
-# Resolve server script paths relative to this file's location
 _HERE = pathlib.Path(__file__).parent.resolve()
 RETRIEVAL_SERVER = str(_HERE / "mcp_servers" / "retrieval_server.py")
 CALCULATOR_SERVER = str(_HERE / "mcp_servers" / "calculator_server.py")
 
-# Map tool name → server script path
 TOOL_SERVER_MAP = {
     "search_documents": RETRIEVAL_SERVER,
     "calculate": CALCULATOR_SERVER,
 }
 
-# Timeout for gateway HTTP calls (seconds)
 GATEWAY_TIMEOUT = 90
 
 
@@ -105,19 +66,11 @@ JSON:"""
 
 def decide_tool(query: str, trace_id: str = "") -> dict:
     """
-    Ask the LLM gateway to classify the query and return the tool routing decision.
+    Query the gateway to determine the appropriate tool for a given user request.
 
-    Returns a dict: {"tool": str, "args": dict}
-    where tool is one of: "search_documents", "calculate", "none".
-
-    Uses the Week 1 gateway's /chat/completions endpoint so the routing LLM
-    benefits from the gateway's model selection and fallback logic — we don't
-    need to manage that here.
-
-    Args:
-        query: The user query string.
-        trace_id: Optional Langfuse trace ID to propagate to the router for
-                  linked tracing. Passed via X-Langfuse-Trace-Id header.
+    Returns:
+        dict: {"tool": str, "args": dict} where tool is one of:
+              "search_documents", "calculate", or "none".
     """
     routing_prompt = _ROUTING_SYSTEM_PROMPT.replace("{query}", query)
     logger.info("Requesting tool decision for query: %r", query)
@@ -136,13 +89,12 @@ def decide_tool(query: str, trace_id: str = "") -> dict:
     except requests.exceptions.ConnectionError:
         raise RuntimeError(
             "Cannot connect to gateway at http://localhost:8000. "
-            "Start it with: python router.py"
+            "Ensure the router is running via: python router.py"
         )
 
     raw_response = resp.json().get("response", "")
     logger.debug("Raw LLM routing response: %r", raw_response)
 
-    # Extract JSON from the response — the LLM might add surrounding text
     decision = _parse_tool_json(raw_response)
     logger.info(
         "Tool decision: tool=%r args=%r", decision.get("tool"), decision.get("args")
@@ -341,7 +293,7 @@ def generate_direct_answer(query: str, trace_id: str = "") -> str:
 
 async def run_query_async(query: str) -> dict:
     """
-    Full orchestration: decide → maybe call tool → generate answer.
+    Full orchestration: decide -> maybe call tool -> generate answer.
 
     Returns:
         {
@@ -355,11 +307,11 @@ async def run_query_async(query: str) -> dict:
     """
     start = time.monotonic()
 
-    # ── Langfuse: create root trace for this user request ──────────────────────
+    # Langfuse: create root trace for this user request
     lf_trace = start_trace(_lf, name="mcp_client:run_query", user_query=query)
     trace_id = lf_trace.id  # "" if Langfuse is disabled (NoopTrace)
 
-    # ── Step 1: decide tool ─────────────────────────────────────────────────────
+    # Step 1: decide tool
     with timed_span(lf_trace, "decide_tool", input_data=query) as dt_span:
         decision = decide_tool(query, trace_id=trace_id)
         tool_name = decision.get("tool", "none")
@@ -372,7 +324,7 @@ async def run_query_async(query: str) -> dict:
     tool_result = ""
     final_response = ""
 
-    # ── Step 2: call tool if needed ─────────────────────────────────────────────
+    # Step 2: call tool if needed
     if tool_name != "none" and tool_name in TOOL_SERVER_MAP:
         logger.info("==> Using tool: %s | args: %s", tool_name, tool_args)
         server_script = TOOL_SERVER_MAP[tool_name]
@@ -387,8 +339,8 @@ async def run_query_async(query: str) -> dict:
                 },
             )
 
-        # ── Step 3: generate answer with tool context ────────────────────────────
-        logger.info("==> Generating final answer with tool context…")
+        # Step 3: generate answer with tool context
+        logger.info("==> Generating final answer with tool context...")
         with timed_span(lf_trace, "generate_final_answer", input_data=query) as ans_span:
             final_response = generate_final_answer(query, tool_name, tool_result, trace_id=trace_id)
             ans_span.update(
@@ -443,24 +395,24 @@ def run_query(query: str) -> dict:
 # ── Interactive REPL ──────────────────────────────────────────────────────────
 
 def main() -> None:
-    """Simple interactive loop for manual testing."""
+    """Interactive CLI loop for manual verification."""
     print("\n" + "=" * 60)
-    print("  MCP Agent Client — Week 2 Local LLM Platform")
+    print("  MCP Agent Client CLI")
     print("=" * 60)
     print("  Available tools: search_documents | calculate")
     print("  Type 'quit' or Ctrl-C to exit.\n")
 
     while True:
         try:
-            query = input("You: ").strip()
+            query = input("Query: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye.")
+            print("\nExiting.")
             break
 
         if not query:
             continue
         if query.lower() in ("quit", "exit"):
-            print("Goodbye.")
+            print("Exiting.")
             break
 
         try:
@@ -469,17 +421,16 @@ def main() -> None:
             print(f"\n[ERROR] {e}\n")
             continue
         except Exception as e:
-            logger.exception("Unexpected error")
+            logger.exception("Unexpected error during query execution")
             print(f"\n[ERROR] {e}\n")
             continue
 
         print(f"\n[Tool used: {result['tool_used']}]")
         if result["tool_result"]:
-            # Truncate tool result for display — it can be very long
-            snippet = result["tool_result"][:300] + ("…" if len(result["tool_result"]) > 300 else "")
+            snippet = result["tool_result"][:300] + ("..." if len(result["tool_result"]) > 300 else "")
             print(f"[Tool result snippet]: {snippet}")
-        print(f"\nAssistant: {result['response']}")
-        print(f"\n[Latency: {result['latency_ms']:.0f} ms]\n")
+        print(f"\nResponse: {result['response']}")
+        print(f"[Latency: {result['latency_ms']:.1f} ms]\n")
 
 
 if __name__ == "__main__":

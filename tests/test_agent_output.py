@@ -1,61 +1,42 @@
 """
-tests/test_agent_output.py — Integration Tests for the Full MCP Pipeline
-=========================================================================
-Sends fixed queries through the complete mcp_client.py pipeline
-(gateway → routing decision → optional tool call → final answer) and
-asserts basic quality bars on the response.
-
-These tests require:
-  - The gateway (router.py) running at localhost:8000
-  - Ollama running with at least the small model (llama3.2:3b)
-  - ChromaDB initialised (for FastAPI-related queries)
-
-Tests are skipped automatically if the gateway is unreachable, so
-``pytest tests/`` doesn't fail on a clean clone or in CI without infrastructure.
-
-Run only these tests:
-    pytest tests/test_agent_output.py -v -m integration
+tests/test_agent_output.py - Integration Tests for the Full MCP Pipeline
+========================================================================
+Dispatches representative queries through the complete mcp_client.py pipeline
+(gateway -> routing decision -> optional tool call -> final answer) and
+asserts structural and semantic properties of the responses.
 """
 
 import pytest
 import requests
 
-# sys.path is set by conftest.py
 from tests.conftest import GATEWAY_URL, chroma_db_exists, gateway_is_up
-import mcp_client  # triggers sys.path check; import mcp_client module
+import mcp_client
 
-
-# ── Skip condition ─────────────────────────────────────────────────────────────
 _NEEDS_GATEWAY = pytest.mark.skipif(
     not gateway_is_up(),
-    reason="Gateway not running at localhost:8000 — start with: python router.py",
+    reason="Gateway not running at localhost:8000. Start with: python router.py",
 )
 
-
-# ── Test queries ───────────────────────────────────────────────────────────────
-# Each entry: (query, expected_keywords_in_response, description)
-# expected_keywords: list of strings where at LEAST ONE must appear.
-# None = no keyword assertion (e.g. greetings where content is unpredictable).
 _INTEGRATION_QUERIES = [
     (
         "What is the default IP address that the fastapi dev command listens on?",
         ["127.0.0.1", "localhost"],
-        "fastapi-cli IP address lookup — should use search_documents",
+        "fastapi-cli IP address lookup - should use search_documents",
     ),
     (
         "What is the average of 4, 8, 15, 16, 23, 42?",
         ["18"],
-        "arithmetic average — should use calculate tool",
+        "arithmetic average - should use calculate tool",
     ),
     (
         "Hello! What can you help me with today?",
-        None,  # greeting — free-form, no keyword assertion
-        "conversational greeting — should answer directly (no tool)",
+        None,
+        "conversational greeting - should answer directly without tool",
     ),
     (
         "Which Python decorator is required to create a middleware function in FastAPI?",
         ["middleware", "@app.middleware", "decorator"],
-        "middleware decorator question — should use search_documents",
+        "middleware decorator question - should use search_documents",
     ),
 ]
 

@@ -1,43 +1,27 @@
 """
-mlops/run_eval.py -- Automated Evaluation Pipeline with MLflow Tracking
+mlops/run_eval.py - Automated Evaluation Pipeline with MLflow Tracking
 =======================================================================
-Loads mlops/gold_set.jsonl, runs each question through the full mcp_client.py
-pipeline, scores answers with semantic similarity, and logs everything to MLflow.
+Executes the evaluation dataset (mlops/gold_set.jsonl) across the agent
+orchestration pipeline, scores answers using embedding cosine similarity,
+and records run parameters, artifacts, and metrics to MLflow.
 
 Usage:
-    # Gateway must be running first:
+    # Gateway service must be running:
     #   python router.py
     python mlops/run_eval.py
 
-Then inspect results in the MLflow UI:
-    mlflow ui
-    # Open http://localhost:5000
+Scoring Methodology and Trade-offs
+----------------------------------
+Answers are evaluated by computing cosine similarity between sentence
+embeddings generated with all-MiniLM-L6-v2 against the expected answer.
 
-Design decisions (for interview discussion)
--------------------------------------------
-Scoring method: cosine similarity between sentence embeddings (all-MiniLM-L6-v2).
-
-WHY semantic similarity was chosen
-  - Free and fully local -- no judge LLM, no API cost.
-  - Robust to paraphrasing: "You should use async def when calling await" scores
-    highly against "Use async def for libraries requiring await" even though the
-    wording differs. A naive exact-match or ROUGE score would fail here.
-  - Reproducible: same model, same code -> same score every time.
-
-KNOWN LIMITATIONS (be honest about these in an interview)
-  - Topical similarity != factual accuracy. An answer that says "use async def for
-    CPU-bound tasks" will embed close to the correct answer because it shares the
-    same words/topic, even though it is factually wrong. The scorer cannot detect
-    hallucination or subtle errors.
-  - Short expected answers can fool it: if the expected answer is "Use uv", almost
-    any answer mentioning "uv" scores highly regardless of surrounding context.
-  - It does not check whether the correct source document was retrieved -- you can
-    get the right answer from the wrong doc and still pass.
-  - The 0.75 pass threshold is a heuristic, not a principled cutoff. Moving it
-    up or down changes the pass rate without improving actual answer quality.
-
-These limitations mean the pipeline is useful for catching regressions (sudden
-drops in average similarity) rather than certifying absolute answer correctness.
+Key considerations:
+1. Paraphrase robustness: Captures semantic alignment without requiring
+   brittle surface-form exact match or n-gram overlap metrics.
+2. Local execution: Operates without reliance on external judge models or APIs.
+3. Caveats: High semantic similarity reflects topical overlap and may not
+   detect fine-grained factual inversions. The pipeline is designed primarily
+   for regression detection across model, prompt, or retrieval updates.
 """
 
 import asyncio

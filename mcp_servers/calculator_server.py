@@ -1,32 +1,17 @@
 """
-mcp_servers/calculator_server.py — Arithmetic Calculator MCP Server
-====================================================================
-Exposes one MCP tool: calculate(expression) → numeric result as string.
-
-Supports two input formats:
-  1. Arithmetic expression:  "4 + 8 + 15 + 16 + 23 + 42"  →  "108"
-  2. Function call style:    "average(4, 8, 15, 16, 23, 42)"  →  "18.0"
-     Supported functions: sum, average (or avg/mean), max, min, count
-
-Design: intentionally simple. The purpose of this server is to prove the
-MCP pattern generalises beyond retrieval — a second tool with a different
-domain (math vs. text) demonstrates the protocol's value as a standard
-interface. If we added more tools later, the client code wouldn't change.
-
-Security: arithmetic evaluation uses ast.parse() + a restricted node
-visitor. We never call eval() on arbitrary user input.
-
-IMPORTANT: stdout is reserved for MCP JSON-RPC — all logging goes to stderr.
+mcp_servers/calculator_server.py - Arithmetic Calculator MCP Server
+===================================================================
+Exposes the calculate(expression) tool to evaluate arithmetic and
+statistical operations using an AST visitor to prevent code injection.
 """
 
 import ast
-import sys
 import logging
-import re
 import operator
+import re
+import sys
 from typing import Union
 
-# ── Logging must go to stderr ──────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] calculator_server | %(message)s",
@@ -146,36 +131,31 @@ def calculate(expression: str) -> str:
     Evaluate a mathematical expression and return the numeric result.
 
     Supports:
-      - Arithmetic:    "4 + 8 + 15 + 16 + 23 + 42"       → "108.0"
-      - Division:      "(4 + 8 + 15 + 16 + 23 + 42) / 6"  → "18.0"
-      - Functions:     "average(4, 8, 15, 16, 23, 42)"    → "18.0"
-      - Named ops:     "sum of 4, 8, 15"                  → "27.0"
-      Supported functions: sum, average (avg/mean), max, min, count
+      - Arithmetic: "4 + 8 + 15 + 16 + 23 + 42" -> "108"
+      - Division: "(4 + 8 + 15 + 16 + 23 + 42) / 6" -> "18"
+      - Functions: "average(4, 8, 15, 16, 23, 42)" -> "18"
+      - Named operations: "sum of 4, 8, 15" -> "27"
+      Supported functions: sum, average (or avg/mean), max, min, count.
 
     Args:
         expression: An arithmetic expression or function call string.
 
     Returns:
-        The numeric result as a string (e.g. "18.0").
-        Returns an error description string if evaluation fails.
+        The numeric result as a string, or an error message if invalid.
     """
     logger.info("calculate called | expression=%r", expression)
 
-    # Try function-style first (e.g. "average(4, 8, 15)")
     func_result = _parse_function_call(expression)
     if func_result is not None:
         func_name, numbers = func_result
         try:
             result = _apply_function(func_name, numbers)
-            # Format: drop trailing .0 for whole numbers to keep output clean
             formatted = str(int(result)) if result == int(result) else str(result)
             logger.info("Function result: %s(%s) = %s", func_name, numbers, formatted)
             return formatted
         except ValueError as e:
             logger.warning("Function evaluation failed: %s", e)
-            # Fall through to arithmetic evaluator
 
-    # Try arithmetic expression (e.g. "(4+8+15+16+23+42)/6")
     try:
         result = evaluate_expression(expression)
         formatted = str(int(result)) if result == int(result) else str(round(result, 10))
@@ -187,8 +167,6 @@ def calculate(expression: str) -> str:
         return error_msg
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    logger.info("calculator_server starting (stdio transport)…")
+    logger.info("calculator_server starting (stdio transport)...")
     mcp.run()

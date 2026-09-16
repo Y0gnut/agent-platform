@@ -1,28 +1,8 @@
 """
-tests/test_retrieval.py — Retrieval Hit-Rate Tests
-===================================================
-For 5 known questions from the gold set, verifies that search_documents()
-returns the CORRECT source document (per gold_set.jsonl) somewhere in its
-top-3 results, and reports the retrieval hit rate.
-
-Design rationale
-----------------
-This test layer sits between pure unit tests (test_tools.py, which checks
-result shape) and full integration tests (test_agent_output.py, which checks
-the final LLM answer). It answers the question: "Is the retrieval step finding
-the right document at all?" independently of whether the LLM synthesises a
-good answer from that document.
-
-A low hit rate here (e.g., 3/5) immediately tells you the retrieval layer
-is the failure mode — as opposed to a low score in test_regression.py, which
-could be either retrieval OR LLM synthesis quality.
-
-Requirements:
-  - ChromaDB initialised (python scripts/ingest.py)
-  - No gateway needed
-
-Run:
-    pytest tests/test_retrieval.py -v -s    # -s shows the hit-rate summary
+tests/test_retrieval.py - Document Retrieval Hit-Rate Verification
+===================================================================
+Evaluates search_documents() against benchmark questions to verify that
+the ground-truth source document appears in the top-k retrieved results.
 """
 
 import json
@@ -30,13 +10,11 @@ import pathlib
 
 import pytest
 
-# sys.path is set by conftest.py
 from tests.conftest import GOLD_SET_PATH, chroma_db_exists
 
-# ── Skip if ChromaDB not present ───────────────────────────────────────────────
 pytestmark = pytest.mark.skipif(
     not chroma_db_exists(),
-    reason="ChromaDB not initialised — run: python scripts/ingest.py",
+    reason="ChromaDB not initialized. Run: python scripts/ingest.py",
 )
 
 # ── Select 5 representative questions from the gold set ───────────────────────

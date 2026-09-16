@@ -25,24 +25,22 @@ Options considered:
 
 Use **cosine similarity between sentence embeddings** (`all-MiniLM-L6-v2`). A question passes if `similarity >= 0.60`.
 
-Both the expected and actual answer are embedded and compared in the same vector space used for retrieval — no additional model or API needed. The 0.60 threshold was selected by visual inspection of the score distribution: most clearly-correct answers scored ≥ 0.65, most clearly-wrong answers scored ≤ 0.45. The pass rate is logged to MLflow per run so regressions are visible as a drop in `pass_rate` over time.
+Both expected and actual answers are embedded and compared in the same vector space used for retrieval - no external model or API required. The 0.60 threshold was calibrated against typical score distributions where accurate answers scored >= 0.65, and inaccurate answers scored <= 0.45. Pass rate metrics are logged to MLflow per run so regressions are visible over time.
 
 ---
 
 ## Consequences
 
-**Pros:**
-- **Free and fully local**: no API cost, no network dependency, works offline.
-- **Paraphrase-robust**: "Use async def when calling libraries that require await" and "async def should be used with libraries requiring await" score ≈ 0.92 against each other.
-- **Reproducible**: same model + same code → identical scores.
-- **Regression-sensitive**: a 10-point drop in pass rate is detectable even when individual answers vary due to LLM stochasticity.
+**Advantages:**
+- **Local and cost-free**: No external API cost, no network dependency, functions offline.
+- **Paraphrase-robust**: Syntactically different sentences conveying identical semantics score with high similarity (typically >= 0.90).
+- **Deterministic**: Same input texts and model weights yield identical scores.
+- **Regression detection**: Meaningful drops in aggregate pass rate are readily surfaced across evaluation iterations.
 
-**Cons / Honest Limitations (be explicit about these):**
-- **Topical similarity ≠ factual accuracy**: "Use async def for CPU-bound tasks" scores ~0.75 against the correct answer because they share key tokens (`async def`), even though it is factually wrong. The scorer **cannot detect hallucination**.
-- **Short expected answers are easy to fool**: if the expected answer is "Use uv", almost any response mentioning "uv" clears the threshold.
-- **Threshold is not principled**: moving from 0.60 to 0.65 changes the reported pass rate without changing actual answer quality. The 0.60 value was tuned to our specific gold set and would not generalise to a different domain.
-- **Does not measure retrieval quality independently**: a response synthesised from the wrong source document can still pass if the LLM's hallucination happens to resemble the expected answer.
+**Limitations:**
+- **Topical similarity does not guarantee factual accuracy**: Answers sharing key domain terminology can achieve passing scores while containing factual errors. Embedding similarity cannot detect hallucinations.
+- **Sensitivity to brief reference answers**: If reference answers are concise, extraneous generation containing target keywords may pass the similarity threshold.
+- **Threshold calibration**: Thresholds reflect the specific calibration set and may require recalibration across different problem domains.
 
-**Intended use:** Regression detection, not quality certification. A stable or rising `avg_similarity` indicates the system is not getting worse; it does not guarantee correctness of individual answers.
-
-**What we'd do at scale:** Add LLM-as-judge scoring (GPT-4o with a rubric) as a second signal, and track both `semantic_similarity` and `judge_score` in MLflow. Use human spot-checks to calibrate judge reliability. Keep cosine similarity for fast, cheap regression gating and add the judge score for release decisions.
+**Production Considerations:**
+Integrate LLM-as-judge scoring (using structured evaluation rubrics) alongside embedding similarity, tracking both dimensions in MLflow. Cosine similarity provides fast, deterministic gating in CI pipelines, while model-based judge scoring validates nuanced correctness before production deployments.

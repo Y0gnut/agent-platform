@@ -25,26 +25,26 @@ Options considered:
 
 ## Decision
 
-Use **Langfuse self-hosted OSS (v3)** via Docker Compose.
+Use **Langfuse self-hosted OSS (v2/v3)** via Docker Compose.
 
-Langfuse is purpose-built for LLM observability: it natively understands the concept of traces with nested spans (routing decision → tool call → LLM answer), captures inputs/outputs/latency at each span, and renders a timeline view of the full request flow. The self-hosted version is MIT-licensed, runs entirely locally (Postgres + worker + web server), and requires no API key or account with an external service.
+Langfuse provides dedicated LLM observability: natively modeling traces with nested spans (routing decision -> tool invocation -> final generation), recording inputs, outputs, and latencies across execution nodes, and rendering chronological timelines of request lifecycles. The self-hosted edition is open-source, operates fully within local infrastructure (PostgreSQL, server, and background worker), and requires no external API keys or cloud dependencies.
 
-Instrumentation is via the official Python SDK (`langfuse>=2.0.0`), wrapped in a thin no-op fallback layer (`gateway/langfuse_client.py`) so the system works identically whether or not Langfuse is running.
+Instrumentation utilizes the official Python SDK (`langfuse>=2.0.0`), abstracted behind a lightweight client layer (`gateway/langfuse_client.py`) providing graceful no-op behavior when observability services are offline.
 
 ---
 
 ## Consequences
 
-**Pros:**
-- **Purpose-built for LLMs**: span-level trace view maps directly to our orchestration flow (routing → MCP tool → final answer), which Prometheus/Jaeger timelines do not represent well.
-- **Free and local**: no SaaS account, no data leaving the machine, no cloud spend.
-- **No-op fallback**: if Langfuse is not running, the gateway degrades gracefully — no `None` pointer errors, no changed behavior.
-- **Trace linking**: mcp_client creates the root trace, passes the trace ID to the gateway via `X-Langfuse-Trace-Id` header, so router spans attach to the same trace. One request → one coherent timeline.
+**Advantages:**
+- **Tailored trace visualization**: Span-level hierarchical traces directly reflect multi-step agent orchestration (prompt classification -> tool dispatch -> answer synthesis).
+- **Self-contained and secure**: No telemetry leaves the local execution boundary; zero operational cloud expenses.
+- **Resilient fallback**: When Langfuse services are unreachable, tracing silently falls back to no-op wrappers without impeding core gateway functions.
+- **Trace propagation**: The agent orchestrator initiates the root trace and forwards the trace identifier to downstream services via the `X-Langfuse-Trace-Id` HTTP header, correlating all spans into a unified timeline.
 
-**Cons / Honest Limitations:**
-- **Docker overhead**: adds three more containers (Postgres, langfuse-server, langfuse-worker). On a laptop, `docker compose up` takes longer and uses additional RAM (~500 MB for Postgres + Langfuse).
-- **v3 requires a worker process**: Langfuse v3 changed the architecture — a separate worker container is required for trace processing. This is a non-obvious operational detail.
-- **No alerting**: Langfuse OSS is a dashboard, not an alerting system. For anomaly detection (e.g. fallback rate spike), you'd need to integrate Prometheus or set up Langfuse's cloud alerts.
-- **SDK version coupling**: the `langfuse>=2.0.0` Python SDK works with both v2 and v3 servers, but its API may diverge in future major versions.
+**Limitations:**
+- **Container footprint**: Requires additional supporting infrastructure (PostgreSQL database and Langfuse container services), consuming extra system memory.
+- **Alerting configuration**: Open-source self-hosted instances do not bundle native alerting engines; alerting requires pairing with monitoring stacks like Prometheus or Alertmanager.
+- **SDK lifecycle**: Client libraries must be maintained in sync with containerized server schema versions.
 
-**What we'd do at scale:** Add structured OpenTelemetry spans alongside Langfuse so that the same trace data flows into an existing APM system (Datadog, Grafana Cloud) if the organisation already uses one. Use Langfuse for LLM-specific dashboards and OpenTelemetry for infrastructure-level metrics.
+**Production Considerations:**
+Integrate OpenTelemetry exporters alongside Langfuse to mirror trace spans into enterprise APM platforms (such as Grafana Tempo or Datadog) while maintaining specialized LLM diagnostic dashboards.
